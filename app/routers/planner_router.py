@@ -46,7 +46,7 @@ def get_meal_plan(user: dict = Depends(get_current_user)):
         rows = conn.execute(
             """
             SELECT mp.id, mp.recipe_id, mp.scale, mp.day_label, mp.notes, mp.created_at,
-                   r.title, r.servings, r.prep_minutes, r.cook_minutes, r.tags_json,
+                   r.title, r.servings, r.prep_minutes, r.cook_minutes, r.tags_json, r.image_url,
                    u.display_name AS added_by_name
             FROM meal_plan_items mp
             JOIN recipes r ON r.id = mp.recipe_id
@@ -63,6 +63,7 @@ def get_meal_plan(user: dict = Depends(get_current_user)):
             "notes": r["notes"],
             "created_at": r["created_at"],
             "title": r["title"],
+            "image_url": r["image_url"] or "",
             "base_servings": r["servings"],
             "effective_servings": round(r["servings"] * r["scale"], 1),
             "prep_minutes": r["prep_minutes"],
@@ -141,6 +142,8 @@ def preview_shopping_list(user: dict = Depends(get_current_user)):
             return []
 
         catalog_rows = [dict(r) for r in conn.execute("SELECT * FROM product_catalog").fetchall()]
+        pantry_rows = conn.execute("SELECT item_key FROM pantry_items WHERE in_stock = 1").fetchall()
+        in_stock_pantry = {r["item_key"] for r in pantry_rows}
         entries = []
         for p in plan_rows:
             ings = conn.execute(
@@ -159,7 +162,7 @@ def preview_shopping_list(user: dict = Depends(get_current_user)):
                     }
                 )
 
-    return compute_grocery_packages(entries, catalog_rows)
+    return compute_grocery_packages(entries, catalog_rows, in_stock_pantry)
 
 
 @router.post("/apply-to-list")

@@ -1,5 +1,5 @@
-import { api } from "../api.js";
-import { closeModal, esc, fmtQty, openModal, toast } from "../utils.js";
+import { api, apiUpload } from "../api.js";
+import { esc, fmtQty, openModal, toast } from "../utils.js";
 
 export async function renderRecipesView(container, state) {
   let recipes = await api("/api/recipes");
@@ -28,25 +28,29 @@ export async function renderRecipesView(container, state) {
       <div class="page-header">
         <div>
           <h1 class="page-title">Recipes</h1>
-          <p class="page-subtitle">Import from any recipe website or save your family favorites</p>
+          <p class="page-subtitle">Import from any recipe website, bulk upload files, or save your family favorites</p>
         </div>
-        <button class="btn btn-primary btn-sm" id="new-recipe-btn">+ New Recipe</button>
+        <div class="row">
+          <button class="btn btn-sm" id="bulk-import-recipes-btn">Bulk Import</button>
+          <button class="btn btn-primary btn-sm" id="new-recipe-btn">+ New Recipe</button>
+        </div>
       </div>
 
       <div class="card stack-md" style="margin-bottom: 16px;">
         <form id="scrape-form" class="row-wrap">
-          <input class="input grow" id="scrape-url-input" type="url" placeholder="Paste a recipe URL to auto-import ingredients & steps (https://...)" required />
+          <input class="input grow" id="scrape-url-input" type="url" placeholder="Paste a recipe URL to auto-import photo, ingredients & steps (https://...)" required />
           <button class="btn btn-accent" type="submit" id="scrape-btn">Import from URL</button>
         </form>
         <input class="input" id="recipe-search" value="${esc(search)}" placeholder="Search recipes by title, tag, or ingredient..." />
       </div>
 
       ${filtered.length === 0 ? `
-        <div class="card empty-state">No recipes found. Import one from a URL or click <strong>+ New Recipe</strong>!</div>
+        <div class="card empty-state">No recipes found. Import one from a URL, click <strong>Bulk Import</strong>, or click <strong>+ New Recipe</strong>!</div>
       ` : `
         <div class="recipe-grid">
           ${filtered.map((r) => `
             <div class="recipe-card">
+              ${r.image_url ? `<img class="recipe-cover" src="${esc(r.image_url)}" alt="${esc(r.title)}" loading="lazy" />` : ""}
               <div class="row" style="justify-content: space-between; align-items: flex-start;">
                 <h3>${esc(r.title)}</h3>
                 <span class="badge">${fmtQty(r.servings)} srv</span>
@@ -74,7 +78,8 @@ export async function renderRecipesView(container, state) {
       el?.setSelectionRange(search.length, search.length);
     });
 
-    document.getElementById("new-recipe-btn")?.addEventListener("click", () => openRecipeEditor(null));
+    document.getElementById("new-recipe-btn")?.addEventListener("click", () => openRecipeEditor(null, false));
+    document.getElementById("bulk-import-recipes-btn")?.addEventListener("click", openBulkImportModal);
 
     document.getElementById("scrape-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -118,6 +123,70 @@ export async function renderRecipesView(container, state) {
     });
   }
 
+  function openBulkImportModal() {
+    openModal("Bulk Import Recipes", `
+      <div class="stack-lg">
+        <form id="bulk-file-form" class="card stack-sm" style="background: var(--bg);">
+          <h4 style="margin: 0;">Option 1: Upload File (.csv, .xlsx, .docx, .json, .txt, .md)</h4>
+          <p class="small muted" style="margin: 0;">
+            For spreadsheets (<code>.csv</code> / <code>.xlsx</code>), use columns like <code>title</code>, <code>ingredients</code>, <code>steps</code>, <code>servings</code>, <code>tags</code>, <code>image_url</code>.
+            For Word/Text (<code>.docx</code> / <code>.txt</code>), separate recipes with <code>---</code> and use <code>Ingredients:</code> and <code>Steps:</code> headings.
+          </p>
+          <input class="input" type="file" name="file" accept=".csv,.xlsx,.docx,.json,.txt,.md" required />
+          <button class="btn btn-primary" type="submit" id="upload-recipes-btn">Upload &amp; Import File</button>
+        </form>
+
+        <form id="bulk-urls-form" class="card stack-sm" style="background: var(--bg);">
+          <h4 style="margin: 0;">Option 2: Batch Import Recipe URLs</h4>
+          <p class="small muted" style="margin: 0;">Paste up to 25 recipe web page URLs (one per line) to scrape and save automatically.</p>
+          <textarea class="textarea" name="urls" placeholder="https://example.com/recipe-1&#10;https://example.com/recipe-2" required></textarea>
+          <button class="btn btn-accent" type="submit" id="batch-urls-btn">Batch Scrape URLs</button>
+        </form>
+      </div>
+    `, (close) => {
+      document.getElementById("bulk-file-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById("upload-recipes-btn");
+        btn.disabled = true;
+        btn.textContent = "Importing...";
+        try {
+          const fd = new FormData(e.target);
+          const res = await apiUpload("/api/import/recipes", fd);
+          recipes = await api("/api/recipes");
+          close();
+          render();
+          toast(`Successfully imported ${res.imported} recipes!`);
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+          btn.textContent = "Upload & Import File";
+        }
+      });
+
+      document.getElementById("bulk-urls-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById("batch-urls-btn");
+        btn.disabled = true;
+        btn.textContent = "Scraping URLs...";
+        try {
+          const urls = e.target.urls.value.split(/\r?\n/).map((u) => u.trim()).filter(Boolean);
+          const res = await api("/api/import/recipes-urls", {
+            method: "POST",
+            body: { urls },
+          });
+          recipes = await api("/api/recipes");
+          close();
+          render();
+          toast(`Imported ${res.imported} recipes!${res.errors?.length ? ` (${res.errors.length} failed)` : ""}`);
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+          btn.textContent = "Batch Scrape URLs";
+        }
+      });
+    });
+  }
+
   function renderDetail(r) {
     container.innerHTML = `
       <div class="page-header">
@@ -129,6 +198,7 @@ export async function renderRecipesView(container, state) {
       </div>
 
       <div class="card stack-md" style="margin-bottom: 16px;">
+        ${r.image_url ? `<img class="recipe-detail-banner" src="${esc(r.image_url)}" alt="${esc(r.title)}" />` : ""}
         <div class="row-wrap" style="justify-content: space-between;">
           <div>
             <h1 class="page-title">${esc(r.title)}</h1>
@@ -226,6 +296,9 @@ export async function renderRecipesView(container, state) {
 
     openModal(isEdit ? "Edit Recipe" : "Save Recipe", `
       <form id="recipe-editor-form" class="stack-md">
+        ${recipe?.image_url ? `
+          <img class="recipe-detail-banner" id="editor-img-preview" src="${esc(recipe.image_url)}" alt="Preview" style="max-height: 170px;" />
+        ` : ""}
         <div>
           <label class="field-label">Recipe Title</label>
           <input class="input" name="title" value="${esc(recipe?.title || "")}" required />
@@ -254,9 +327,15 @@ export async function renderRecipesView(container, state) {
             <input class="input" name="cook_minutes" type="number" min="0" value="${esc(recipe?.cook_minutes ?? "")}" />
           </div>
         </div>
-        <div>
-          <label class="field-label">Source URL (optional)</label>
-          <input class="input" name="source_url" value="${esc(recipe?.source_url || "")}" />
+        <div class="grid-2">
+          <div>
+            <label class="field-label">Source URL (optional)</label>
+            <input class="input" name="source_url" value="${esc(recipe?.source_url || "")}" />
+          </div>
+          <div>
+            <label class="field-label">Recipe Photo URL (auto-filled when scraped)</label>
+            <input class="input" name="image_url" value="${esc(recipe?.image_url || "")}" placeholder="https://..." />
+          </div>
         </div>
         <div>
           <label class="field-label">Ingredients (one per line, e.g. "2 tbsp olive oil")</label>
@@ -310,6 +389,7 @@ export async function renderRecipesView(container, state) {
           prep_minutes: f.prep_minutes.value ? Number(f.prep_minutes.value) : null,
           cook_minutes: f.cook_minutes.value ? Number(f.cook_minutes.value) : null,
           source_url: f.source_url.value.trim(),
+          image_url: f.image_url.value.trim(),
           tags,
           steps,
           notes: f.notes.value.trim(),

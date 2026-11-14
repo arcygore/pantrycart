@@ -2,7 +2,7 @@ import html
 import json
 import re
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -118,11 +118,30 @@ def _extract_instructions(raw: Any) -> list[str]:
 
 def _extract_image(img: Any) -> str:
     if isinstance(img, str):
-        return img
+        return img.strip()
     if isinstance(img, list) and img:
-        return _extract_image(img[0])
+        for item in img:
+            cand = _extract_image(item)
+            if cand:
+                return cand
+        return ""
     if isinstance(img, dict):
-        return str(img.get("url") or img.get("contentUrl") or "")
+        return str(img.get("url") or img.get("contentUrl") or "").strip()
+    return ""
+
+
+def _extract_fallback_image(soup: BeautifulSoup, base_url: str) -> str:
+    for sel, attr in [
+        ("meta[property='og:image']", "content"),
+        ("meta[name='twitter:image']", "content"),
+        (".wprm-recipe-image img", "src"),
+        ("img[itemprop='image']", "src"),
+    ]:
+        el = soup.select_one(sel)
+        if el and el.get(attr):
+            raw = str(el.get(attr)).strip()
+            if raw:
+                return urljoin(base_url, raw)
     return ""
 
 
@@ -183,6 +202,10 @@ async def scrape_recipe_url(url: str) -> dict[str, Any]:
         ingredients = [parse_ingredient_line(_clean_text(x)) for x in raw_ings if _clean_text(x)]
         steps = _extract_instructions(recipe_ld.get("recipeInstructions"))
         image_url = _extract_image(recipe_ld.get("image"))
+        if image_url:
+            image_url = urljoin(str(resp.url), image_url)
+        else:
+            image_url = _extract_fallback_image(soup, str(resp.url))
         tags = _extract_tags(recipe_ld)
 
         if title and (ingredients or steps):
@@ -234,7 +257,7 @@ async def scrape_recipe_url(url: str) -> dict[str, Any]:
         "prep_minutes": None,
         "cook_minutes": None,
         "source_url": str(resp.url),
-        "image_url": "",
+        "image_url": _extract_fallback_image(soup, str(resp.url)),
         "tags": [],
         "ingredients": ingredients,
         "steps": steps,

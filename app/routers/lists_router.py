@@ -16,6 +16,7 @@ class CreateListPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     list_type: str = "one_off"  # weekly | one_off | store
     store_id: Optional[int] = None
+    position: Optional[int] = None
 
 
 class UpdateListPayload(BaseModel):
@@ -23,6 +24,33 @@ class UpdateListPayload(BaseModel):
     list_type: Optional[str] = None
     store_id: Optional[int] = None
     is_archived: Optional[bool] = None
+    position: Optional[int] = None
+
+
+class ListReorderPayload(BaseModel):
+    list_ids: list[int]
+
+
+class TemplateItemPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    buy_qty: float = Field(default=1.0, gt=0)
+    buy_unit: str = ""
+    department: str = "Produce"
+    notes: str = ""
+    is_active: bool = True
+
+
+class TemplateItemUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    buy_qty: Optional[float] = None
+    buy_unit: Optional[str] = None
+    department: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ApplyTemplatePayload(BaseModel):
+    item_ids: Optional[list[int]] = None
 
 
 class AddListItemPayload(BaseModel):
@@ -195,7 +223,7 @@ def list_shopping_lists(include_archived: bool = False, user: dict = Depends(get
             query += " WHERE sl.is_archived = 0 "
         query += """
             GROUP BY sl.id
-            ORDER BY CASE sl.list_type WHEN 'weekly' THEN 0 WHEN 'store' THEN 1 ELSE 2 END, sl.id ASC
+            ORDER BY sl.sort_order ASC, CASE sl.list_type WHEN 'weekly' THEN 0 WHEN 'store' THEN 1 ELSE 2 END, sl.id ASC
         """
         rows = conn.execute(query).fetchall()
     return [
@@ -207,12 +235,106 @@ def list_shopping_lists(include_archived: bool = False, user: dict = Depends(get
             "store_name": r["store_name"] or "",
             "store_type": r["store_type"] or "grocery",
             "is_archived": bool(r["is_archived"]),
+            "sort_order": r["sort_order"],
             "unchecked_count": r["unchecked_count"] or 0,
             "checked_count": r["checked_count"] or 0,
             "updated_at": r["updated_at"],
         }
         for r in rows
     ]
+
+
+@router.post("/reorder")
+def reorder_shopping_lists(payload: ListReorderPayload, user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        for idx, lid in enumerate(payload.list_ids, start=1):
+            conn.execute("UPDATE shopping_lists SET sort_order = ? WHERE id = ?", (idx, lid))
+    return list_shopping_lists(False, user)
+
+
+@router.get("/template/items")
+def get_template_items(user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM weekly_template_items ORDER BY sort_order ASC, id ASC"
+        ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "item_key": r["item_key"],
+            "buy_qty": r["buy_qty"],
+            "buy_unit": r["buy_unit"],
+            "department": r["department"],
+            "notes": r["notes"],
+            "is_active": bool(r["is_active"]),
+            "sort_order": r["sort_order"],
+        }
+        for r in rows
+    ]
+
+
+@router.post("/template/items")
+def add_template_item(payload: TemplateItemPayload, user: dict = Depends(get_current_user)):
+    now = utc_now_iso()
+    with get_db() as conn:
+        catalog_rows = [dict(r) for r in conn.execute("SELECT * FROM product_catalog").fetchall()]
+        cat = match_catalog_item(payload.name, catalog_rows)
+        ikey = cat["canonical_name"] if cat else normalize_item_key(payload.name)
+        unit = payload.buy_unit.strip() or (cat["package_label"] if cat else "")
+        dept = payload.department.strip() or (cat["default_department"] if cat else "Produce")
+        max_ord = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM weekly_template_items").fetchone()[0]
+        cur = conn.execute(
+            """
+            INSERT INTO weekly_template_items (name, item_key, buy_qty, buy_unit, department, notes, is_active, sort_order, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.name.strip(),
+                ikey,
+                payload.buy_qty,
+                unit,
+                dept,
+                payload.notes.strip(),
+                1 if payload.is_active else 0,
+                max_ord + 1,
+                now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM weekly_template_items WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+@router.patch("/template/items/{tpl_id}")
+def update_template_item(tpl_id: int, payload: TemplateItemUpdatePayload, user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM weekly_template_items WHERE id = ?", (tpl_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Template item not found")
+        name = payload.name.strip() if payload.name is not None else row["name"]
+        ikey = normalize_item_key(name) if payload.name is not None else row["item_key"]
+        qty = payload.buy_qty if payload.buy_qty is not None else row["buy_qty"]
+        unit = payload.buy_unit.strip() if payload.buy_unit is not None else row["buy_unit"]
+        dept = payload.department.strip() if payload.department is not None else row["department"]
+        notes = payload.notes.strip() if payload.notes is not None else row["notes"]
+        act = (1 if payload.is_active else 0) if payload.is_active is not None else row["is_active"]
+        conn.execute(
+            """
+            UPDATE weekly_template_items
+            SET name = ?, item_key = ?, buy_qty = ?, buy_unit = ?, department = ?, notes = ?, is_active = ?
+            WHERE id = ?
+            """,
+            (name, ikey, qty, unit, dept, notes, act, tpl_id),
+        )
+        updated = conn.execute("SELECT * FROM weekly_template_items WHERE id = ?", (tpl_id,)).fetchone()
+    return dict(updated)
+
+
+@router.delete("/template/items/{tpl_id}")
+def delete_template_item(tpl_id: int, user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        conn.execute("DELETE FROM weekly_template_items WHERE id = ?", (tpl_id,))
+    return {"ok": True}
 
 
 @router.get("/suggestions")
@@ -255,6 +377,17 @@ def suggest_items(q: str = "", store_id: Optional[int] = None, user: dict = Depe
     return results[:12]
 
 
+def _reposition_list(conn, list_id: int, target_pos_1based: int):
+    rows = conn.execute(
+        "SELECT id FROM shopping_lists WHERE is_archived = 0 ORDER BY sort_order ASC, id ASC"
+    ).fetchall()
+    ordered_ids = [r["id"] for r in rows if r["id"] != list_id]
+    idx = max(0, min(len(ordered_ids), target_pos_1based - 1))
+    ordered_ids.insert(idx, list_id)
+    for order_idx, lid in enumerate(ordered_ids, start=1):
+        conn.execute("UPDATE shopping_lists SET sort_order = ? WHERE id = ?", (order_idx, lid))
+
+
 @router.post("")
 def create_shopping_list(payload: CreateListPayload, user: dict = Depends(get_current_user)):
     now = utc_now_iso()
@@ -263,14 +396,18 @@ def create_shopping_list(payload: CreateListPayload, user: dict = Depends(get_cu
         if store_id is None:
             default_store = conn.execute("SELECT id FROM stores WHERE is_default = 1 LIMIT 1").fetchone()
             store_id = default_store["id"] if default_store else None
+        max_ord = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM shopping_lists").fetchone()[0]
         cur = conn.execute(
             """
-            INSERT INTO shopping_lists (name, list_type, store_id, is_archived, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, 0, ?, ?, ?)
+            INSERT INTO shopping_lists (name, list_type, store_id, is_archived, sort_order, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, 0, ?, ?, ?, ?)
             """,
-            (payload.name.strip(), payload.list_type, store_id, user["id"], now, now),
+            (payload.name.strip(), payload.list_type, store_id, max_ord + 1, user["id"], now, now),
         )
-        row = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (cur.lastrowid,)).fetchone()
+        lid = cur.lastrowid
+        if payload.position is not None:
+            _reposition_list(conn, lid, payload.position)
+        row = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (lid,)).fetchone()
         return build_list_response(conn, row)
 
 
@@ -302,6 +439,49 @@ def update_shopping_list(list_id: int, payload: UpdateListPayload, user: dict = 
             """,
             (name, ltype, sid, arch, now, list_id),
         )
+        if payload.position is not None:
+            _reposition_list(conn, list_id, payload.position)
+        updated = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
+        return build_list_response(conn, updated)
+
+
+@router.post("/{list_id}/apply-template")
+def apply_weekly_template(
+    list_id: int,
+    payload: ApplyTemplatePayload = ApplyTemplatePayload(),
+    user: dict = Depends(get_current_user),
+):
+    with get_db() as conn:
+        lst = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
+        if not lst:
+            raise HTTPException(status_code=404, detail="Shopping list not found")
+        if payload.item_ids is not None:
+            if not payload.item_ids:
+                return build_list_response(conn, lst)
+            placeholders = ",".join("?" for _ in payload.item_ids)
+            tpl_rows = conn.execute(
+                f"SELECT * FROM weekly_template_items WHERE id IN ({placeholders}) ORDER BY sort_order ASC, id ASC",
+                tuple(payload.item_ids),
+            ).fetchall()
+        else:
+            tpl_rows = conn.execute(
+                "SELECT * FROM weekly_template_items WHERE is_active = 1 ORDER BY sort_order ASC, id ASC"
+            ).fetchall()
+
+        for t in tpl_rows:
+            add_item_to_list_internal(
+                conn,
+                list_id,
+                AddListItemPayload(
+                    name=t["name"],
+                    buy_qty=t["buy_qty"],
+                    buy_unit=t["buy_unit"],
+                    department=t["department"],
+                    notes=t["notes"] or "Weekly staple",
+                    save_to_store=False,
+                ),
+                user["id"],
+            )
         updated = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
         return build_list_response(conn, updated)
 

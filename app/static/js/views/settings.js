@@ -23,7 +23,7 @@ export async function renderSettingsView(container, state, onLogout) {
 
       <div class="subtabs">
         <button class="subtab ${tab === "household" ? "active" : ""}" data-tab="household">Household Accounts</button>
-        <button class="subtab ${tab === "catalog" ? "active" : ""}" data-tab="catalog">US Package Sizes &amp; Pantry</button>
+        <button class="subtab ${tab === "catalog" ? "active" : ""}" data-tab="catalog">US Store Package Sizes</button>
         <button class="subtab ${tab === "ha" ? "active" : ""}" data-tab="ha">Home Assistant &amp; API</button>
       </div>
 
@@ -103,11 +103,10 @@ export async function renderSettingsView(container, state, onLogout) {
               <div class="grow">
                 <div style="font-weight: 700;">
                   ${esc(c.display_name)}
-                  ${c.is_pantry_staple ? `<span class="badge badge-accent">Pantry Staple</span>` : ""}
                 </div>
                 <div class="small muted">${esc(c.default_department)} · Std Size: ${esc(c.package_size)} ${esc(c.package_unit)} (${esc(c.package_label)})</div>
               </div>
-              <button class="btn btn-sm edit-cat-btn" data-id="${c.id}">Edit</button>
+              <button class="btn btn-sm edit-cat-btn" data-id="${c.id}">Edit Std Size</button>
             </div>
           `).join("")}
           ${filtered.length > 60 ? `<p class="small muted">Showing first 60 matches — refine search to see more.</p>` : ""}

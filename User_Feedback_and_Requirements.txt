@@ -1,0 +1,87 @@
+# 📋 PANTRYCART — KANBAN FEEDBACK & REQUIREMENTS BOARD
+> **How this board works:**
+> 1. **Add new items** anytime under **📥 INBOX / NEW FEEDBACK** (or **📋 BACKLOG / LONG-TERM FEATURES**).
+> 2. When the agent finishes an item, it moves it to **👀 READY FOR REVIEW** with `[ ]` **unchecked** and adds an **Agent Resolution Note** explaining how it was built.
+> 3. **Your sign-off:** Test the feature, then mark `[x]` to approve it (or add a reply note if you want tweaks). Approved items move to **✅ APPROVED & CLOSED**.
+
+---
+
+## 📥 INBOX / NEW FEEDBACK
+*(Drop new DO / DONT items or bug reports here)*
+
+- *(Empty — add your next round of feedback here!)*
+
+---
+
+## 🚧 IN PROGRESS
+*(Items currently being built)*
+
+- *(None currently)*
+
+---
+
+## 👀 READY FOR REVIEW (Awaiting Your Official Approval)
+*(Check `[x]` once you verify and approve, or add a comment below any item if you want changes)*
+
+- [ ] **FB-01 (DO): Allow for a "template list" to start, including weekly purchased items (bananas, chicken tenderloins, salad mixes, etc.)**
+  - **Agent Resolution Note:**
+    - Added a `weekly_template_items` table in `app/database.py` pre-seeded with **Bananas**, **Chicken Tenderloins**, **Salad Mix**, **Eggs**, and **Milk**.
+    - In **Shopping Lists** (`app/static/js/views/lists.js`), added a **Weekly Template (N)** button in the header (to add/remove/toggle your recurring weekly staples) and a **+ Load Weekly Staples** button on any list to drop all active template items onto your trip in one tap.
+    - In **This Week** (`app/static/js/views/planner.js`), the **Generate Shopping List** modal now includes an **Include Weekly Template Staples** toggle so you can combine your weekly staples and recipe ingredients in one step.
+
+- [ ] **FB-02 (DO): Allow Stores on the top bar to be edited where they are located (e.g. place a custom store anywhere in the list)**
+  - **Agent Resolution Note:**
+    - Added `sort_order` to both `stores` and `shopping_lists` (`app/database.py`) plus `POST /api/stores/reorder` and `POST /api/lists/reorder`.
+    - In **Stores & Aisle Maps** (`app/static/js/views/stores.js`), added a **Position on Top Bar (1 = First)** field inside both **+ Add Custom Store** and **Edit Store & Position**, plus a **Reorder Top Bar** button that lets you move any store up/down to place it anywhere on the bar.
+    - Also added a **Reorder Tabs** button in **Shopping Lists** so you can reorder your shopping list pills on the top bar too.
+
+- [ ] **FB-03 (DO): Make the checkmark animation more satisfying (slightly slower checkmark and show it flying to bottom of list)**
+  - **Agent Resolution Note:**
+    - Added a two-stage animation in `app/static/css/styles.css` and `app/static/js/views/lists.js`:
+      1. **Stage 1 (`~340ms`)**: Tapping an unchecked circle triggers a bouncy green pop (`checkPop`), draws the SVG checkmark stroke (`drawCheckStroke`), highlights the row in soft sage, and crosses out the item text.
+      2. **Stage 2 (`~440ms`)**: The item row smoothly glides downward toward the bottom **Checked / In Cart** drawer (`flyToBottomDrawer`) while collapsing its height before updating the list.
+
+- [ ] **FB-04 (DO): Allow the user to edit the "std" unit somehow if their store's standard is different**
+  - **Agent Resolution Note:**
+    - Added `POST /api/catalog/upsert-std` in `app/routers/catalog_router.py`.
+    - In **This Week → Build Shopping List** (`app/static/js/views/planner.js`), every ingredient row now has an inline **✎ Edit Std** button right next to its `Std:` package label. Clicking it opens an inline editor to change the numeric size, unit, and package label (e.g., changing `15 oz can` to `28 oz can`) and clicks **Save & Recalculate** to update the required package count live.
+    - Also added a checkbox inside the **Edit Item** modal on any shopping list to save an item's unit/package label as the default Standard (`Std`) size for future recipes.
+
+- [ ] **FB-05 (DO): Pull in an image of the recipe if sync'd from the web**
+  - **Agent Resolution Note:**
+    - Enhanced `app/scraper.py` to extract recipe images from Schema.org JSON-LD (`str`, `list`, or `ImageObject`), fallback to OpenGraph `og:image` / `twitter:image` / `.wprm-recipe-image`, and resolve relative URLs.
+    - Updated `app/static/js/views/recipes.js` and `app/static/js/views/planner.js` to display recipe cover photos on **Recipe Cards**, inside **View & Cook** detail mode, as thumbnails in **This Week's Menu**, and with a live preview + editable Photo URL field in the **Save/Edit Recipe** modal.
+
+- [ ] **FB-06 (DO): Allow the user to "bulk import" recipes, store layouts, etc. (.csv, .xlsx, .docx, etc.) from a different app**
+  - **Agent Resolution Note:**
+    - Added `openpyxl` and `python-docx` to `requirements.txt` and created `app/routers/import_router.py`.
+    - **Recipes → Bulk Import**: Supports uploading `.csv`, `.xlsx`, `.docx` (Word), `.json`, `.txt`, or `.md` files, plus a **Batch Scrape URLs** option where you can paste up to 25 recipe URLs at once.
+    - **Stores → Bulk Import**: Upload a `.csv` or `.xlsx` file (`item`, `department`, `aisle`) to bulk-map aisles for any store.
+    - **Pantry → Bulk Import**: Upload a `.csv` or `.xlsx` file (`name`, `category`, `quantity_note`, `in_stock`) to bulk-load pantry items.
+
+- [ ] **FB-07 (DONT): Do NOT put "package sizes" and "pantry" together — make a separate area for pantry staples categorized by canned goods, spices, etc.**
+  - **Agent Resolution Note:**
+    - Created a dedicated `pantry_items` table (`app/database.py`), `/api/pantry` router (`app/routers/pantry_router.py`), and a dedicated **Pantry** tab in the main navigation bar (`app/static/js/views/pantry.js`).
+    - Pantry items are organized into category tabs: **Spices & Seasonings**, **Canned & Jarred Goods**, **Oils, Vinegars & Condiments**, **Baking & Cooking Staples**, **Grains, Pasta & Dry Goods**, and **Snacks & Other**, with one-tap **Mark Low / Mark In Stock** and **+ To List** buttons.
+    - **Settings → US Store Package Sizes** now focuses strictly on store package sizes without mixing in pantry inventory.
+
+---
+
+## 📋 BACKLOG / LONG-TERM FEATURES
+*(Future roadmap items)*
+
+- [ ] **LT-01: Calendar Meal Planning**
+  - Allow the user to place meals on a visual calendar so they can plan meals by day/date for the week.
+- [ ] **LT-02: Calendar Sync (Home Assistant / Google Calendar)**
+  - Allow the meal plan calendar to sync to Home Assistant or Google Calendar (e.g., via an iCal `.ics` feed and HA REST sensor).
+- [ ] **LT-03: "Bird's-Eye View" Visual Store Map**
+  - Visual 2D store layout where departments/aisles can be placed on a bird's-eye map of the store.
+- [ ] **LT-04: Recipe Nutrition & Custom Portion Scaling**
+  - Pull in nutrition information for recipes and allow dividing a recipe into custom portions (e.g., "dividing this recipe into 5 servings instead of 6") with automatic per-serving macro calculation.
+
+---
+
+## ✅ APPROVED & CLOSED
+*(Items verified and signed off by you)*
+
+- *(Items will move here once you check `[x]` in Ready for Review!)*

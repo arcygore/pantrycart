@@ -2,6 +2,7 @@ import { api } from "./api.js";
 import { ICONS, esc, toast } from "./utils.js";
 import { renderAuthView } from "./views/auth.js";
 import { renderListsView } from "./views/lists.js";
+import { renderPantryView } from "./views/pantry.js";
 import { renderPlannerView } from "./views/planner.js";
 import { renderRecipesView } from "./views/recipes.js";
 import { renderSettingsView } from "./views/settings.js";
@@ -11,6 +12,7 @@ const NAV_ITEMS = [
   { id: "lists", label: "Lists", icon: ICONS.list },
   { id: "planner", label: "This Week", icon: ICONS.calendar },
   { id: "recipes", label: "Recipes", icon: ICONS.book },
+  { id: "pantry", label: "Pantry", icon: ICONS.pantry },
   { id: "stores", label: "Stores", icon: ICONS.store },
   { id: "settings", label: "Settings", icon: ICONS.settings },
 ];
@@ -125,6 +127,8 @@ async function loadCurrentView() {
       await renderPlannerView(viewRoot, state, navigate);
     } else if (state.view === "recipes") {
       await renderRecipesView(viewRoot, state);
+    } else if (state.view === "pantry") {
+      await renderPantryView(viewRoot, state);
     } else if (state.view === "stores") {
       await renderStoresView(viewRoot, state);
     } else if (state.view === "settings") {

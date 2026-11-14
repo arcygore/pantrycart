@@ -1,9 +1,10 @@
 import { api } from "../api.js";
-import { ICONS, closeModal, esc, fmtQty, openModal, toast } from "../utils.js";
+import { ICONS, esc, fmtQty, openModal, toast } from "../utils.js";
 
 export async function renderListsView(container, state) {
   let lists = await api("/api/lists");
   const stores = await api("/api/stores");
+  let templateItems = await api("/api/lists/template/items");
 
   if (!state.activeListId || !lists.some((l) => l.id === state.activeListId)) {
     state.activeListId = lists[0]?.id || null;
@@ -15,13 +16,9 @@ export async function renderListsView(container, state) {
   function render() {
     const uncheckedItems = (activeList?.items || []).filter((i) => !i.checked);
     const checkedItems = (activeList?.items || []).filter((i) => i.checked);
-    const storeDepts = activeList?.store?.departments || [
-      "Produce", "Bakery & Deli", "Meat & Seafood", "Dry Goods",
-      "Beverages", "Frozen", "Dairy & Eggs", "Household & Personal", "Other",
-    ];
+    const activeTplCount = templateItems.filter((t) => t.is_active).length;
     const aisleDepts = new Set(activeList?.store?.aisle_departments || ["Dry Goods"]);
 
-    // Group unchecked items by department
     const deptGroups = new Map();
     for (const item of uncheckedItems) {
       const d = item.department || "Other";
@@ -35,7 +32,11 @@ export async function renderListsView(container, state) {
           <h1 class="page-title">Shopping Lists</h1>
           <p class="page-subtitle">Automatically grouped by store department &amp; aisle</p>
         </div>
-        <button class="btn btn-primary btn-sm" id="new-list-btn">+ New List</button>
+        <div class="row-wrap">
+          <button class="btn btn-accent btn-sm" id="template-list-btn">Weekly Template (${activeTplCount})</button>
+          <button class="btn btn-sm" id="reorder-lists-btn">Reorder Tabs</button>
+          <button class="btn btn-primary btn-sm" id="new-list-btn">+ New List</button>
+        </div>
       </div>
 
       <div class="list-tabs" id="list-tabs">
@@ -61,6 +62,7 @@ export async function renderListsView(container, state) {
               <span class="badge">${esc(activeList.list_type === "weekly" ? "Weekly Trip" : activeList.list_type === "store" ? "Dedicated Store" : "One-off")}</span>
             </div>
             <div class="row">
+              <button class="btn btn-sm" id="quick-load-template-btn" title="Add active weekly staples to this list">+ Load Weekly Staples</button>
               ${activeList.list_type === "one_off" ? `<button class="btn btn-sm btn-danger" id="delete-list-btn">Delete List</button>` : ""}
             </div>
           </div>
@@ -78,7 +80,7 @@ export async function renderListsView(container, state) {
         ${uncheckedItems.length === 0 ? `
           <div class="card empty-state">
             <p style="font-weight:700; color: var(--text); margin: 0 0 6px;">Nothing left to buy on ${esc(activeList.name)}!</p>
-            <p class="small" style="margin: 0;">Add items above or generate items from <strong>This Week's Meals</strong>.</p>
+            <p class="small" style="margin: 0 0 12px;">Add items above, click <strong>+ Load Weekly Staples</strong>, or generate from <strong>This Week's Meals</strong>.</p>
           </div>
         ` : `
           <div class="stack-md">
@@ -108,23 +110,21 @@ export async function renderListsView(container, state) {
           </div>
         `}
 
-        ${checkedItems.length > 0 ? `
-          <div class="card stack-sm" style="margin-top: 16px;">
-            <div class="row" style="justify-content: space-between;">
-              <button class="btn btn-sm" id="toggle-checked-btn" type="button">
-                ${showChecked ? "Hide" : "Show"} Checked / In Cart (${checkedItems.length})
-              </button>
-              <button class="btn btn-sm btn-danger" id="clear-checked-btn" type="button">
-                Clear Checked
-              </button>
-            </div>
-            ${showChecked ? `
-              <div style="margin-top: 6px;">
-                ${checkedItems.map((item) => renderItemRow(item, activeList.store)).join("")}
-              </div>
-            ` : ""}
+        <div class="card stack-sm" id="checked-drawer-card" style="margin-top: 16px; ${checkedItems.length === 0 ? "display:none;" : ""}">
+          <div class="row" style="justify-content: space-between;">
+            <button class="btn btn-sm" id="toggle-checked-btn" type="button">
+              ${showChecked ? "Hide" : "Show"} Checked / In Cart (${checkedItems.length})
+            </button>
+            <button class="btn btn-sm btn-danger" id="clear-checked-btn" type="button">
+              Clear Checked
+            </button>
           </div>
-        ` : ""}
+          ${showChecked ? `
+            <div style="margin-top: 6px;">
+              ${checkedItems.map((item) => renderItemRow(item, activeList.store)).join("")}
+            </div>
+          ` : ""}
+        </div>
       ` : `
         <div class="card empty-state">No shopping lists yet. Create one to get started!</div>
       `}
@@ -164,12 +164,172 @@ export async function renderListsView(container, state) {
     `;
   }
 
+  function openTemplateManagerModal() {
+    const renderModalBody = () => `
+      <div class="stack-md">
+        <p class="small muted" style="margin: 0;">
+          Configure your recurring weekly essentials (like bananas, chicken tenderloins, salad mixes). Load checked items onto any list in one tap!
+        </p>
+
+        <form id="add-tpl-form" class="row-wrap">
+          <input class="input grow" name="name" placeholder="Add weekly staple (e.g. Greek Yogurt, Berries)..." required />
+          <input class="input" name="buy_qty" type="number" step="0.25" min="0.25" value="1" style="width: 70px;" />
+          <input class="input" name="buy_unit" placeholder="Unit/Pack" style="width: 120px;" />
+          <button class="btn btn-primary btn-sm" type="submit">+ Add</button>
+        </form>
+
+        <div class="stack-sm" style="max-height: 300px; overflow-y: auto;">
+          ${templateItems.map((t) => `
+            <div class="row" style="justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px;">
+              <label class="row grow" style="cursor: pointer;">
+                <input type="checkbox" class="tpl-toggle" data-id="${t.id}" ${t.is_active ? "checked" : ""} />
+                <div>
+                  <div style="font-weight: 700;">${esc(t.name)} <span class="item-qty">${fmtQty(t.buy_qty)} ${esc(t.buy_unit)}</span></div>
+                  <div class="small muted">${esc(t.department)}</div>
+                </div>
+              </label>
+              <button class="btn btn-sm btn-danger tpl-del-btn" data-id="${t.id}" type="button">✕</button>
+            </div>
+          `).join("")}
+        </div>
+
+        ${activeList ? `
+          <button class="btn btn-primary" id="apply-tpl-now-btn" type="button">
+            Add Checked Staples to "${esc(activeList.name)}"
+          </button>
+        ` : ""}
+      </div>
+    `;
+
+    openModal("Weekly Template List (Recurring Staples)", renderModalBody(), (close) => {
+      const bindTplModal = () => {
+        document.getElementById("add-tpl-form")?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const f = e.target;
+          await api("/api/lists/template/items", {
+            method: "POST",
+            body: {
+              name: f.name.value.trim(),
+              buy_qty: Number(f.buy_qty.value) || 1,
+              buy_unit: f.buy_unit.value.trim(),
+            },
+          });
+          templateItems = await api("/api/lists/template/items");
+          document.getElementById("modal-body").innerHTML = renderModalBody();
+          bindTplModal();
+          render();
+        });
+
+        document.querySelectorAll(".tpl-toggle").forEach((chk) => {
+          chk.addEventListener("change", async () => {
+            await api(`/api/lists/template/items/${chk.dataset.id}`, {
+              method: "PATCH",
+              body: { is_active: chk.checked },
+            });
+            templateItems = await api("/api/lists/template/items");
+            render();
+          });
+        });
+
+        document.querySelectorAll(".tpl-del-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            await api(`/api/lists/template/items/${btn.dataset.id}`, { method: "DELETE" });
+            templateItems = await api("/api/lists/template/items");
+            document.getElementById("modal-body").innerHTML = renderModalBody();
+            bindTplModal();
+            render();
+          });
+        });
+
+        document.getElementById("apply-tpl-now-btn")?.addEventListener("click", async () => {
+          const activeIds = templateItems.filter((t) => t.is_active).map((t) => t.id);
+          if (!activeIds.length) {
+            toast("Check at least one template item first", true);
+            return;
+          }
+          activeList = await api(`/api/lists/${activeList.id}/apply-template`, {
+            method: "POST",
+            body: { item_ids: activeIds },
+          });
+          lists = await api("/api/lists");
+          close();
+          render();
+          toast(`Added ${activeIds.length} weekly staples to ${activeList.name}!`);
+        });
+      };
+      bindTplModal();
+    });
+  }
+
   function bindEvents() {
     document.querySelectorAll(".list-tab").forEach((btn) => {
       btn.addEventListener("click", async () => {
         state.activeListId = Number(btn.dataset.listId);
         activeList = await api(`/api/lists/${state.activeListId}`);
         render();
+      });
+    });
+
+    document.getElementById("template-list-btn")?.addEventListener("click", openTemplateManagerModal);
+
+    document.getElementById("quick-load-template-btn")?.addEventListener("click", async () => {
+      activeList = await api(`/api/lists/${activeList.id}/apply-template`, {
+        method: "POST",
+        body: {},
+      });
+      lists = await api("/api/lists");
+      render();
+      toast(`Loaded weekly template items into ${activeList.name}!`);
+    });
+
+    document.getElementById("reorder-lists-btn")?.addEventListener("click", () => {
+      let ordered = [...lists];
+      const renderOrderBody = () => `
+        <div class="stack-md">
+          <p class="small muted" style="margin: 0;">Move shopping list tabs up or down to change their order on the top bar.</p>
+          <div class="stack-sm">
+            ${ordered.map((l, idx) => `
+              <div class="row" style="justify-content: space-between; padding: 8px 10px; background: var(--bg); border-radius: 9px;">
+                <span><strong>${idx + 1}.</strong> ${esc(l.name)}</span>
+                <div class="row" style="gap: 4px;">
+                  <button class="btn btn-sm move-list-up" data-idx="${idx}" ${idx === 0 ? "disabled" : ""}>↑</button>
+                  <button class="btn btn-sm move-list-down" data-idx="${idx}" ${idx === ordered.length - 1 ? "disabled" : ""}>↓</button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+          <button class="btn btn-primary" id="save-list-order-btn">Save Tab Order</button>
+        </div>
+      `;
+      openModal("Reorder Shopping List Tabs", renderOrderBody(), (close) => {
+        const bindOrder = () => {
+          document.querySelectorAll(".move-list-up").forEach((b) => {
+            b.addEventListener("click", () => {
+              const i = Number(b.dataset.idx);
+              [ordered[i - 1], ordered[i]] = [ordered[i], ordered[i - 1]];
+              document.getElementById("modal-body").innerHTML = renderOrderBody();
+              bindOrder();
+            });
+          });
+          document.querySelectorAll(".move-list-down").forEach((b) => {
+            b.addEventListener("click", () => {
+              const i = Number(b.dataset.idx);
+              [ordered[i + 1], ordered[i]] = [ordered[i], ordered[i + 1]];
+              document.getElementById("modal-body").innerHTML = renderOrderBody();
+              bindOrder();
+            });
+          });
+          document.getElementById("save-list-order-btn")?.addEventListener("click", async () => {
+            lists = await api("/api/lists/reorder", {
+              method: "POST",
+              body: { list_ids: ordered.map((x) => x.id) },
+            });
+            close();
+            render();
+            toast("List tab order saved!");
+          });
+        };
+        bindOrder();
       });
     });
 
@@ -197,6 +357,10 @@ export async function renderListsView(container, state) {
               </select>
             </div>
           </div>
+          <div>
+            <label class="field-label">Position on Top Bar (1 = First, blank = End)</label>
+            <input class="input" name="position" type="number" min="1" max="${lists.length + 1}" placeholder="${lists.length + 1}" />
+          </div>
           <button class="btn btn-primary" type="submit">Create List</button>
         </form>
       `, (close) => {
@@ -209,6 +373,7 @@ export async function renderListsView(container, state) {
               name: f.name.value,
               list_type: f.list_type.value,
               store_id: f.store_id.value ? Number(f.store_id.value) : null,
+              position: f.position.value ? Number(f.position.value) : null,
             },
           });
           lists = await api("/api/lists");
@@ -326,13 +491,34 @@ export async function renderListsView(container, state) {
       const item = activeList.items.find((i) => i.id === itemId);
       if (!item) return;
 
-      rowEl.querySelector('[data-action="toggle"]')?.addEventListener("click", async () => {
-        activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, {
-          method: "PATCH",
-          body: { checked: !item.checked },
-        });
-        lists = await api("/api/lists");
-        render();
+      rowEl.querySelector('[data-action="toggle"]')?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        if (!item.checked) {
+          // FB-03: Satisfying checkmark draw + fly-to-bottom animation!
+          btn.classList.add("animating");
+          btn.innerHTML = ICONS.check;
+          rowEl.classList.add("checking-stage-1");
+
+          const patchPromise = api(`/api/lists/${activeList.id}/items/${itemId}`, {
+            method: "PATCH",
+            body: { checked: true },
+          });
+
+          await new Promise((r) => setTimeout(r, 340));
+          rowEl.classList.add("flying-to-bottom");
+          await new Promise((r) => setTimeout(r, 440));
+
+          activeList = await patchPromise;
+          lists = await api("/api/lists");
+          render();
+        } else {
+          activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, {
+            method: "PATCH",
+            body: { checked: false },
+          });
+          lists = await api("/api/lists");
+          render();
+        }
       });
 
       rowEl.querySelector('[data-action="edit-item"]')?.addEventListener("click", () => {
@@ -379,6 +565,10 @@ export async function renderListsView(container, state) {
                 <span>Remember this Department &amp; Aisle for <strong>${esc(storeName)}</strong></span>
               </label>
             ` : ""}
+            <label class="row small">
+              <input type="checkbox" name="save_as_std" />
+              <span>Save this Unit/Package label as the default <strong>Standard (Std) Size</strong> for future recipes</span>
+            </label>
             <div class="row" style="justify-content: space-between;">
               <button class="btn btn-danger" type="button" id="delete-item-btn">Remove Item</button>
               <button class="btn btn-primary" type="submit">Save Changes</button>
@@ -396,6 +586,20 @@ export async function renderListsView(container, state) {
           document.getElementById("edit-item-form").addEventListener("submit", async (e) => {
             e.preventDefault();
             const f = e.target;
+            if (f.save_as_std.checked && f.buy_unit.value.trim()) {
+              const numMatch = f.buy_unit.value.match(/(\d+(?:\.\d+)?)\s*(fl_oz|oz|lb|g|ml|count|clove|bunch|head)/i);
+              await api("/api/catalog/upsert-std", {
+                method: "POST",
+                body: {
+                  item_key: item.item_key,
+                  display_name: f.name.value.trim(),
+                  default_department: f.department.value,
+                  package_size: numMatch ? Number(numMatch[1]) : 1,
+                  package_unit: numMatch ? numMatch[2].toLowerCase() : "count",
+                  package_label: f.buy_unit.value.trim(),
+                },
+              });
+            }
             activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, {
               method: "PATCH",
               body: {
@@ -420,9 +624,9 @@ export async function renderListsView(container, state) {
 
   render();
 
-  // Gentle multi-user sync while viewing Lists tab
   return setInterval(async () => {
     if (document.hidden || document.getElementById("modal-root")?.innerHTML) return;
+    if (document.querySelector(".flying-to-bottom, .checking-stage-1")) return;
     const focused = document.activeElement;
     if (focused && (focused.id === "quick-add-input" || focused.tagName === "SELECT")) return;
     try {

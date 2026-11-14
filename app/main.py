@@ -10,7 +10,9 @@ from app.routers import (
     auth_router,
     catalog_router,
     ha_router,
+    import_router,
     lists_router,
+    pantry_router,
     planner_router,
     recipes_router,
     stores_router,
@@ -35,6 +37,8 @@ app.include_router(planner_router.router)
 app.include_router(lists_router.router)
 app.include_router(stores_router.router)
 app.include_router(catalog_router.router)
+app.include_router(pantry_router.router)
+app.include_router(import_router.router)
 app.include_router(ha_router.router)
 
 

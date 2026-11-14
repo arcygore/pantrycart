@@ -18,6 +18,7 @@ class StorePayload(BaseModel):
     departments: list[str] = Field(default_factory=lambda: list(GROCERY_DEPARTMENTS))
     aisle_departments: list[str] = Field(default_factory=lambda: list(GROCERY_AISLE_DEPTS))
     clone_locations_from_store_id: Optional[int] = None
+    position: Optional[int] = None  # 1-based position in top bar
 
 
 class StoreUpdatePayload(BaseModel):
@@ -26,6 +27,11 @@ class StoreUpdatePayload(BaseModel):
     chain: Optional[str] = None
     departments: Optional[list[str]] = None
     aisle_departments: Optional[list[str]] = None
+    position: Optional[int] = None  # 1-based position in top bar
+
+
+class StoreReorderPayload(BaseModel):
+    store_ids: list[int]
 
 
 class LocationUpsertPayload(BaseModel):
@@ -44,14 +50,33 @@ def _serialize_store(row) -> dict:
         "departments": json.loads(row["departments_json"] or "[]"),
         "aisle_departments": json.loads(row["aisle_departments_json"] or "[]"),
         "is_default": bool(row["is_default"]),
+        "sort_order": row["sort_order"],
         "created_at": row["created_at"],
     }
+
+
+def _reposition_store(conn, store_id: int, target_pos_1based: int):
+    rows = conn.execute("SELECT id FROM stores ORDER BY sort_order ASC, id ASC").fetchall()
+    ordered_ids = [r["id"] for r in rows if r["id"] != store_id]
+    idx = max(0, min(len(ordered_ids), target_pos_1based - 1))
+    ordered_ids.insert(idx, store_id)
+    for order_idx, sid in enumerate(ordered_ids, start=1):
+        conn.execute("UPDATE stores SET sort_order = ? WHERE id = ?", (order_idx, sid))
 
 
 @router.get("")
 def list_stores(user: dict = Depends(get_current_user)):
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM stores ORDER BY id ASC").fetchall()
+        rows = conn.execute("SELECT * FROM stores ORDER BY sort_order ASC, id ASC").fetchall()
+    return [_serialize_store(r) for r in rows]
+
+
+@router.post("/reorder")
+def reorder_stores(payload: StoreReorderPayload, user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        for idx, sid in enumerate(payload.store_ids, start=1):
+            conn.execute("UPDATE stores SET sort_order = ? WHERE id = ?", (idx, sid))
+        rows = conn.execute("SELECT * FROM stores ORDER BY sort_order ASC, id ASC").fetchall()
     return [_serialize_store(r) for r in rows]
 
 
@@ -61,10 +86,11 @@ def create_store(payload: StorePayload, user: dict = Depends(get_current_user)):
     depts = [d.strip() for d in payload.departments if d.strip()] or list(GROCERY_DEPARTMENTS)
     aisle_depts = [d.strip() for d in payload.aisle_departments if d.strip()]
     with get_db() as conn:
+        max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM stores").fetchone()[0]
         cur = conn.execute(
             """
-            INSERT INTO stores (name, store_type, chain, departments_json, aisle_departments_json, is_default, created_at)
-            VALUES (?, ?, ?, ?, ?, 0, ?)
+            INSERT INTO stores (name, store_type, chain, departments_json, aisle_departments_json, is_default, sort_order, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
                 payload.name.strip(),
@@ -72,10 +98,13 @@ def create_store(payload: StorePayload, user: dict = Depends(get_current_user)):
                 payload.chain.strip() or payload.name.strip(),
                 json.dumps(depts),
                 json.dumps(aisle_depts),
+                max_order + 1,
                 now,
             ),
         )
         sid = cur.lastrowid
+        if payload.position is not None:
+            _reposition_store(conn, sid, payload.position)
         if payload.clone_locations_from_store_id:
             src_locs = conn.execute(
                 "SELECT item_key, item_display, department, aisle FROM item_store_locations WHERE store_id = ?",
@@ -120,6 +149,8 @@ def update_store(store_id: int, payload: StoreUpdatePayload, user: dict = Depend
             """,
             (name, stype, chain, depts, adepts, store_id),
         )
+        if payload.position is not None:
+            _reposition_store(conn, store_id, payload.position)
         updated = conn.execute("SELECT * FROM stores WHERE id = ?", (store_id,)).fetchone()
     return _serialize_store(updated)
 

@@ -23,3 +23,23 @@ export async function api(path, options = {}) {
   }
   return data;
 }
+
+export async function apiUpload(path, formData) {
+  const resp = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    body: formData,
+  });
+  let data = null;
+  const ct = resp.headers.get("content-type") || "";
+  if (ct.includes("application/json")) {
+    data = await resp.json();
+  } else {
+    data = await resp.text();
+  }
+  if (!resp.ok) {
+    const msg = (data && data.detail) ? data.detail : `Upload failed (${resp.status})`;
+    throw new Error(msg);
+  }
+  return data;
+}

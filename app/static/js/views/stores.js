@@ -1,5 +1,5 @@
-import { api } from "../api.js";
-import { closeModal, esc, openModal, toast } from "../utils.js";
+import { api, apiUpload } from "../api.js";
+import { esc, openModal, toast } from "../utils.js";
 
 export async function renderStoresView(container, state) {
   let stores = await api("/api/stores");
@@ -11,6 +11,7 @@ export async function renderStoresView(container, state) {
 
   function render() {
     const activeStore = stores.find((s) => s.id === state.activeStoreId);
+    const activeIndex = stores.findIndex((s) => s.id === state.activeStoreId);
     const filteredLocs = locations.filter((l) => {
       if (!locSearch.trim()) return true;
       const q = locSearch.trim().toLowerCase();
@@ -25,9 +26,12 @@ export async function renderStoresView(container, state) {
       <div class="page-header">
         <div>
           <h1 class="page-title">Stores &amp; Aisle Maps</h1>
-          <p class="page-subtitle">Configure department walking order &amp; exact aisle numbers per store</p>
+          <p class="page-subtitle">Configure department walking order, top bar order &amp; exact aisle numbers per store</p>
         </div>
-        <button class="btn btn-primary btn-sm" id="add-store-btn">+ Add Custom Store</button>
+        <div class="row-wrap">
+          <button class="btn btn-sm" id="reorder-stores-btn">Reorder Top Bar</button>
+          <button class="btn btn-primary btn-sm" id="add-store-btn">+ Add Custom Store</button>
+        </div>
       </div>
 
       <div class="list-tabs">
@@ -44,9 +48,12 @@ export async function renderStoresView(container, state) {
             <div class="row" style="justify-content: space-between;">
               <div>
                 <h2 style="margin: 0; font-size: 1.08rem;">${esc(activeStore.name)} Layout</h2>
-                <span class="badge">${esc(activeStore.store_type)}</span>
+                <div class="row" style="gap: 6px; margin-top: 2px;">
+                  <span class="badge">${esc(activeStore.store_type)}</span>
+                  <span class="badge badge-primary">Top Bar Pos #${activeIndex + 1}</span>
+                </div>
               </div>
-              <button class="btn btn-sm" id="edit-store-btn">Edit Departments</button>
+              <button class="btn btn-sm" id="edit-store-btn">Edit Store &amp; Position</button>
             </div>
             <p class="small muted" style="margin: 0;">Walking order from top to bottom. Items in aisle-enabled departments sort by aisle number.</p>
             <div class="stack-sm">
@@ -63,14 +70,17 @@ export async function renderStoresView(container, state) {
           </div>
 
           <div class="card stack-md">
-            <div class="row" style="justify-content: space-between;">
+            <div class="row-wrap" style="justify-content: space-between;">
               <h2 style="margin: 0; font-size: 1.08rem;">Item Aisle Map (${locations.length})</h2>
-              <button class="btn btn-primary btn-sm" id="add-loc-btn">+ Map Item</button>
+              <div class="row">
+                <button class="btn btn-sm" id="bulk-import-locs-btn">Bulk Import</button>
+                <button class="btn btn-primary btn-sm" id="add-loc-btn">+ Map Item</button>
+              </div>
             </div>
             <input class="input" id="loc-search" value="${esc(locSearch)}" placeholder="Filter mapped items or aisles..." />
             ${filteredLocs.length === 0 ? `
               <p class="small muted" style="margin: 8px 0;">
-                No custom aisle mappings saved for ${esc(activeStore.name)} yet. Map items here or tap any item's <strong>+ Aisle</strong> button while shopping!
+                No custom aisle mappings saved for ${esc(activeStore.name)} yet. Map items here, bulk import a <code>.csv</code>/<code>.xlsx</code>, or tap any item's <strong>+ Aisle</strong> button while shopping!
               </p>
             ` : `
               <div class="stack-sm">
@@ -94,10 +104,10 @@ export async function renderStoresView(container, state) {
       ` : ""}
     `;
 
-    bindEvents(activeStore);
+    bindEvents(activeStore, activeIndex);
   }
 
-  function bindEvents(activeStore) {
+  function bindEvents(activeStore, activeIndex) {
     document.querySelectorAll("[data-store-id]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         state.activeStoreId = Number(btn.dataset.storeId);
@@ -114,12 +124,70 @@ export async function renderStoresView(container, state) {
       el?.setSelectionRange(locSearch.length, locSearch.length);
     });
 
+    document.getElementById("reorder-stores-btn")?.addEventListener("click", () => {
+      let ordered = [...stores];
+      const renderOrderBody = () => `
+        <div class="stack-md">
+          <p class="small muted" style="margin: 0;">Place stores in any order you like on the top bar and dropdowns.</p>
+          <div class="stack-sm">
+            ${ordered.map((s, idx) => `
+              <div class="row" style="justify-content: space-between; padding: 8px 10px; background: var(--bg); border-radius: 9px;">
+                <span><strong>${idx + 1}.</strong> ${esc(s.name)} <span class="badge">${esc(s.store_type)}</span></span>
+                <div class="row" style="gap: 4px;">
+                  <button class="btn btn-sm move-store-up" data-idx="${idx}" ${idx === 0 ? "disabled" : ""}>↑</button>
+                  <button class="btn btn-sm move-store-down" data-idx="${idx}" ${idx === ordered.length - 1 ? "disabled" : ""}>↓</button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+          <button class="btn btn-primary" id="save-store-order-btn">Save Top Bar Order</button>
+        </div>
+      `;
+
+      openModal("Reorder Stores on Top Bar", renderOrderBody(), (close) => {
+        const bindOrder = () => {
+          document.querySelectorAll(".move-store-up").forEach((b) => {
+            b.addEventListener("click", () => {
+              const i = Number(b.dataset.idx);
+              [ordered[i - 1], ordered[i]] = [ordered[i], ordered[i - 1]];
+              document.getElementById("modal-body").innerHTML = renderOrderBody();
+              bindOrder();
+            });
+          });
+          document.querySelectorAll(".move-store-down").forEach((b) => {
+            b.addEventListener("click", () => {
+              const i = Number(b.dataset.idx);
+              [ordered[i + 1], ordered[i]] = [ordered[i], ordered[i + 1]];
+              document.getElementById("modal-body").innerHTML = renderOrderBody();
+              bindOrder();
+            });
+          });
+          document.getElementById("save-store-order-btn")?.addEventListener("click", async () => {
+            stores = await api("/api/stores/reorder", {
+              method: "POST",
+              body: { store_ids: ordered.map((x) => x.id) },
+            });
+            close();
+            render();
+            toast("Store top bar order saved!");
+          });
+        };
+        bindOrder();
+      });
+    });
+
     document.getElementById("add-store-btn")?.addEventListener("click", () => {
       openModal("Add Custom Store", `
         <form id="create-store-form" class="stack-md">
-          <div>
-            <label class="field-label">Store Name</label>
-            <input class="input" name="name" placeholder="e.g. Kroger - Main St, Trader Joe's, Publix #412" required />
+          <div class="grid-2">
+            <div>
+              <label class="field-label">Store Name</label>
+              <input class="input" name="name" placeholder="e.g. Kroger - Main St, Trader Joe's" required />
+            </div>
+            <div>
+              <label class="field-label">Position on Top Bar (1 = First)</label>
+              <input class="input" name="position" type="number" min="1" max="${stores.length + 1}" value="${stores.length + 1}" />
+            </div>
           </div>
           <div class="grid-2">
             <div>
@@ -172,6 +240,7 @@ Other</textarea>
               departments: depts,
               aisle_departments: aisleDepts,
               clone_locations_from_store_id: f.clone_id.value ? Number(f.clone_id.value) : null,
+              position: f.position.value ? Number(f.position.value) : null,
             },
           });
           stores = await api("/api/stores");
@@ -186,11 +255,17 @@ Other</textarea>
 
     document.getElementById("edit-store-btn")?.addEventListener("click", () => {
       if (!activeStore) return;
-      openModal(`Edit ${activeStore.name} Layout`, `
+      openModal(`Edit ${activeStore.name} Layout & Position`, `
         <form id="edit-store-form" class="stack-md">
-          <div>
-            <label class="field-label">Store Name</label>
-            <input class="input" name="name" value="${esc(activeStore.name)}" required />
+          <div class="grid-2">
+            <div>
+              <label class="field-label">Store Name</label>
+              <input class="input" name="name" value="${esc(activeStore.name)}" required />
+            </div>
+            <div>
+              <label class="field-label">Position on Top Bar (1 = First, ${stores.length} = Last)</label>
+              <input class="input" name="position" type="number" min="1" max="${stores.length}" value="${activeIndex + 1}" required />
+            </div>
           </div>
           <div>
             <label class="field-label">Departments (one per line, in walking order)</label>
@@ -224,12 +299,44 @@ Other</textarea>
           const aisleDepts = f.aisle_departments.value.split(",").map((x) => x.trim()).filter(Boolean);
           await api(`/api/stores/${activeStore.id}`, {
             method: "PUT",
-            body: { name: f.name.value.trim(), departments: depts, aisle_departments: aisleDepts },
+            body: {
+              name: f.name.value.trim(),
+              departments: depts,
+              aisle_departments: aisleDepts,
+              position: f.position.value ? Number(f.position.value) : null,
+            },
           });
           stores = await api("/api/stores");
           close();
           render();
-          toast("Store layout updated");
+          toast("Store layout & position updated");
+        });
+      });
+    });
+
+    document.getElementById("bulk-import-locs-btn")?.addEventListener("click", () => {
+      if (!activeStore) return;
+      openModal(`Bulk Import Aisle Map for ${activeStore.name}`, `
+        <form id="import-locs-form" class="stack-md">
+          <p class="small muted" style="margin: 0;">
+            Upload a <code>.csv</code> or <code>.xlsx</code> file with columns: <code>item</code>, <code>department</code>, <code>aisle</code>.
+          </p>
+          <input class="input" type="file" name="file" accept=".csv,.xlsx" required />
+          <button class="btn btn-primary" type="submit">Upload &amp; Map Items</button>
+        </form>
+      `, (close) => {
+        document.getElementById("import-locs-form").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          try {
+            const res = await apiUpload(`/api/import/store-locations/${activeStore.id}`, fd);
+            locations = await api(`/api/stores/${activeStore.id}/locations`);
+            close();
+            render();
+            toast(`Mapped ${res.imported} items for ${activeStore.name}!`);
+          } catch (err) {
+            toast(err.message, true);
+          }
         });
       });
     });

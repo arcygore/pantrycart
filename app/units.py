@@ -472,12 +472,14 @@ def format_qty(val: Optional[float]) -> str:
 def compute_grocery_packages(
     aggregated_entries: list[dict[str, Any]],
     catalog_rows: list[dict],
+    in_stock_pantry_keys: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
     """
     Takes a list of recipe ingredient occurrences:
       [{"name": str, "quantity": float|None, "unit": str, "recipe_title": str, "catalog_id": int|None}]
     Merges identical items, converts units, and calculates US store package quantities.
     """
+    pantry_set = in_stock_pantry_keys or set()
     cat_by_id = {r["id"]: r for r in catalog_rows}
     buckets: dict[str, dict[str, Any]] = {}
 
@@ -490,12 +492,12 @@ def compute_grocery_packages(
             key = cat["canonical_name"]
             display = cat["display_name"]
             dept = cat["default_department"]
-            is_staple = bool(cat["is_pantry_staple"])
+            is_staple = bool(cat["is_pantry_staple"]) or (key in pantry_set)
         else:
             key = _strip_fillers(entry["name"]) or normalize_item_key(entry["name"])
             display = entry["name"].strip().title()
             dept = "Other"
-            is_staple = False
+            is_staple = key in pantry_set
 
         if key not in buckets:
             buckets[key] = {
@@ -586,6 +588,10 @@ def compute_grocery_packages(
                 "is_pantry_staple": b["is_pantry_staple"],
                 "source_recipes": b["recipes"],
                 "include_by_default": not b["is_pantry_staple"],
+                "catalog_id": cat["id"] if cat else None,
+                "package_size": float(cat["package_size"]) if cat else 1.0,
+                "package_unit": cat["package_unit"] if cat else (buy_unit or "count"),
+                "package_label": cat["package_label"] if cat else (buy_unit or "1 item"),
             }
         )
 

@@ -173,7 +173,7 @@ a {
   backdrop-filter: blur(10px);
   border-top: 1px solid var(--border);
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   z-index: 40;
 }
 
@@ -818,4 +818,112 @@ a {
   text-align: center;
   padding: 36px 16px;
   color: var(--text-muted);
+}
+
+/* Satisfying Checkmark & Fly-to-Bottom Animation (FB-03) */
+@keyframes checkPop {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.28); background: var(--primary); border-color: var(--primary); }
+  100% { transform: scale(1.06); background: var(--primary); border-color: var(--primary); }
+}
+
+@keyframes drawCheckStroke {
+  0% { stroke-dashoffset: 28; }
+  100% { stroke-dashoffset: 0; }
+}
+
+.check-circle.animating {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  animation: checkPop 0.38s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.check-circle.animating svg polyline {
+  stroke-dasharray: 28;
+  stroke-dashoffset: 28;
+  animation: drawCheckStroke 0.34s ease-out 0.05s forwards;
+}
+
+.item-row.checking-stage-1 {
+  background: var(--primary-soft);
+  transition: background 0.25s ease;
+}
+
+.item-row.checking-stage-1 .item-name {
+  text-decoration: line-through;
+  color: var(--text-muted);
+  transition: color 0.25s ease;
+}
+
+@keyframes flyToBottomDrawer {
+  0% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+    max-height: 90px;
+  }
+  40% {
+    transform: translateY(24px) scale(0.97);
+    opacity: 0.88;
+    max-height: 90px;
+  }
+  100% {
+    transform: translateY(150px) scale(0.88);
+    opacity: 0;
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+  }
+}
+
+.item-row.flying-to-bottom {
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 20;
+  position: relative;
+  animation: flyToBottomDrawer 0.48s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* Recipe Images (FB-05) */
+.recipe-cover {
+  width: calc(100% + 32px);
+  margin: -16px -16px 6px -16px;
+  height: 155px;
+  object-fit: cover;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+}
+
+.recipe-detail-banner {
+  width: 100%;
+  max-height: 280px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.plan-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 9px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+
+.btn-link-inline {
+  border: none;
+  background: var(--accent-soft);
+  color: #92400e;
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  margin-left: 6px;
+}
+
+.btn-link-inline:hover {
+  background: #fde68a;
 }

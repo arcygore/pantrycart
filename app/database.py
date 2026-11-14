@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS stores (
     departments_json TEXT NOT NULL,
     aisle_departments_json TEXT NOT NULL,
     is_default INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -137,8 +138,32 @@ CREATE TABLE IF NOT EXISTS shopping_lists (
     list_type TEXT NOT NULL DEFAULT 'weekly',
     store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
     is_archived INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS weekly_template_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    item_key TEXT NOT NULL,
+    buy_qty REAL NOT NULL DEFAULT 1,
+    buy_unit TEXT NOT NULL DEFAULT '',
+    department TEXT NOT NULL DEFAULT 'Produce',
+    notes TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pantry_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    item_key TEXT UNIQUE NOT NULL,
+    category TEXT NOT NULL DEFAULT 'Canned & Jarred Goods',
+    quantity_note TEXT NOT NULL DEFAULT 'In Stock',
+    in_stock INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL
 );
 
@@ -426,12 +451,78 @@ SEED_CATALOG = [
     ("toilet paper", "Toilet Paper", [], "Household & Personal", 12, "count", "12-roll pack", 0),
     ("dish soap", "Dish Soap", [], "Household & Personal", 16, "fl_oz", "16 oz bottle", 0),
     ("trash bags", "Trash Bags", ["garbage bags"], "Household & Personal", 40, "count", "40-count box", 0),
+    ("chicken tenderloins", "Chicken Tenderloins", ["chicken tenders", "boneless chicken tenderloins"], "Meat & Seafood", 1.25, "lb", "1.25 lb pack", 0),
+    ("salad mix", "Salad Mix", ["salad kit", "chopped salad kit", "spring mix salad"], "Produce", 1, "bag", "bag / clamshell", 0),
 ]
+
+SEED_WEEKLY_TEMPLATE = [
+    ("Bananas", "banana", 1, "bunch (~6 bananas)", "Produce"),
+    ("Chicken Tenderloins", "chicken tenderloins", 1, "1.25 lb pack", "Meat & Seafood"),
+    ("Salad Mix", "salad mix", 2, "bag / clamshell", "Produce"),
+    ("Eggs", "eggs", 1, "dozen (12)", "Dairy & Eggs"),
+    ("Milk", "milk", 1, "half gallon (64 oz)", "Dairy & Eggs"),
+]
+
+SEED_PANTRY = [
+    # Spices & Seasonings
+    ("Kosher Salt", "kosher salt", "Spices & Seasonings", "Full box", 1),
+    ("Black Pepper", "black pepper", "Spices & Seasonings", "Full grinder", 1),
+    ("Garlic Powder", "garlic powder", "Spices & Seasonings", "In Stock", 1),
+    ("Onion Powder", "onion powder", "Spices & Seasonings", "In Stock", 1),
+    ("Paprika", "paprika", "Spices & Seasonings", "In Stock", 1),
+    ("Ground Cumin", "ground cumin", "Spices & Seasonings", "In Stock", 1),
+    ("Chili Powder", "chili powder", "Spices & Seasonings", "In Stock", 1),
+    ("Italian Seasoning", "italian seasoning", "Spices & Seasonings", "In Stock", 1),
+    ("Dried Oregano", "dried oregano", "Spices & Seasonings", "In Stock", 1),
+    ("Dried Thyme", "dried thyme", "Spices & Seasonings", "In Stock", 1),
+    ("Ground Cinnamon", "cinnamon", "Spices & Seasonings", "In Stock", 1),
+    ("Crushed Red Pepper Flakes", "red pepper flakes", "Spices & Seasonings", "In Stock", 1),
+    # Oils, Vinegars & Condiments
+    ("Olive Oil", "olive oil", "Oils, Vinegars & Condiments", "1 bottle", 1),
+    ("Vegetable / Canola Oil", "vegetable oil", "Oils, Vinegars & Condiments", "In Stock", 1),
+    ("Soy Sauce", "soy sauce", "Oils, Vinegars & Condiments", "In Stock", 1),
+    ("Balsamic Vinegar", "balsamic vinegar", "Oils, Vinegars & Condiments", "In Stock", 1),
+    ("Apple Cider Vinegar", "apple cider vinegar", "Oils, Vinegars & Condiments", "In Stock", 1),
+    ("Dijon Mustard", "dijon mustard", "Oils, Vinegars & Condiments", "In Stock", 1),
+    ("Mayonnaise", "mayonnaise", "Oils, Vinegars & Condiments", "In Stock", 1),
+    ("Ketchup", "ketchup", "Oils, Vinegars & Condiments", "In Stock", 1),
+    ("Honey", "honey", "Oils, Vinegars & Condiments", "In Stock", 1),
+    # Canned & Jarred Goods
+    ("Black Beans (Canned)", "black beans", "Canned & Jarred Goods", "2 cans", 1),
+    ("Diced Tomatoes (Canned)", "diced tomatoes", "Canned & Jarred Goods", "2 cans", 1),
+    ("Chicken Broth", "chicken broth", "Canned & Jarred Goods", "1 carton", 1),
+    ("Marinara / Pasta Sauce", "tomato sauce", "Canned & Jarred Goods", "1 jar", 1),
+    # Baking & Cooking Staples
+    ("All-Purpose Flour", "all-purpose flour", "Baking & Cooking Staples", "5 lb bag", 1),
+    ("Granulated Sugar", "granulated sugar", "Baking & Cooking Staples", "In Stock", 1),
+    ("Brown Sugar", "brown sugar", "Baking & Cooking Staples", "In Stock", 1),
+    ("Baking Powder", "baking powder", "Baking & Cooking Staples", "In Stock", 1),
+    ("Baking Soda", "baking soda", "Baking & Cooking Staples", "In Stock", 1),
+    ("Vanilla Extract", "vanilla extract", "Baking & Cooking Staples", "In Stock", 1),
+    ("Cornstarch", "cornstarch", "Baking & Cooking Staples", "In Stock", 1),
+    # Grains, Pasta & Dry Goods
+    ("White Rice", "white rice", "Grains, Pasta & Dry Goods", "2 lb bag", 1),
+    ("Pasta (Dry)", "pasta", "Grains, Pasta & Dry Goods", "1 box", 1),
+    ("Rolled Oats", "rolled oats", "Grains, Pasta & Dry Goods", "In Stock", 1),
+]
+
+
+def _run_migrations(conn: sqlite3.Connection):
+    store_cols = {r["name"] for r in conn.execute("PRAGMA table_info(stores)").fetchall()}
+    if "sort_order" not in store_cols:
+        conn.execute("ALTER TABLE stores ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE stores SET sort_order = id WHERE sort_order = 0")
+
+    list_cols = {r["name"] for r in conn.execute("PRAGMA table_info(shopping_lists)").fetchall()}
+    if "sort_order" not in list_cols:
+        conn.execute("ALTER TABLE shopping_lists ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE shopping_lists SET sort_order = id WHERE sort_order = 0")
 
 
 def init_db():
     with get_db() as conn:
         conn.executescript(SCHEMA_SQL)
+        _run_migrations(conn)
         _seed_defaults(conn)
 
 
@@ -441,11 +532,11 @@ def _seed_defaults(conn: sqlite3.Connection):
     # Seed stores if empty
     store_count = conn.execute("SELECT COUNT(*) FROM stores").fetchone()[0]
     if store_count == 0:
-        for s in DEFAULT_STORES:
+        for idx, s in enumerate(DEFAULT_STORES, start=1):
             conn.execute(
                 """
-                INSERT INTO stores (name, store_type, chain, departments_json, aisle_departments_json, is_default, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO stores (name, store_type, chain, departments_json, aisle_departments_json, is_default, sort_order, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     s["name"],
@@ -454,6 +545,7 @@ def _seed_defaults(conn: sqlite3.Connection):
                     json.dumps(s["departments"]),
                     json.dumps(s["aisle_departments"]),
                     s["is_default"],
+                    idx,
                     now,
                 ),
             )
@@ -472,6 +564,19 @@ def _seed_defaults(conn: sqlite3.Connection):
                 """,
                 (canonical, display, json.dumps(aliases), dept, pkg_size, pkg_unit, pkg_label, is_staple),
             )
+    else:
+        # Ensure newly added seed catalog items exist on upgrade
+        for item in SEED_CATALOG[-2:]:
+            canonical, display, aliases, dept, pkg_size, pkg_unit, pkg_label, is_staple = item
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO product_catalog (
+                    canonical_name, display_name, aliases_json, default_department,
+                    package_size, package_unit, package_label, is_pantry_staple, store_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'grocery')
+                """,
+                (canonical, display, json.dumps(aliases), dept, pkg_size, pkg_unit, pkg_label, is_staple),
+            )
 
     # Seed default shopping lists if empty
     list_count = conn.execute("SELECT COUNT(*) FROM shopping_lists").fetchone()[0]
@@ -483,13 +588,37 @@ def _seed_defaults(conn: sqlite3.Connection):
             ("Home Depot", "store", stores.get("Home Depot")),
             ("IKEA", "store", stores.get("IKEA")),
         ]
-        for lname, ltype, sid in default_lists:
+        for idx, (lname, ltype, sid) in enumerate(default_lists, start=1):
             conn.execute(
                 """
-                INSERT INTO shopping_lists (name, list_type, store_id, is_archived, created_at, updated_at)
-                VALUES (?, ?, ?, 0, ?, ?)
+                INSERT INTO shopping_lists (name, list_type, store_id, is_archived, sort_order, created_at, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?, ?)
                 """,
-                (lname, ltype, sid, now, now),
+                (lname, ltype, sid, idx, now, now),
+            )
+
+    # Seed weekly template items if empty
+    tpl_count = conn.execute("SELECT COUNT(*) FROM weekly_template_items").fetchone()[0]
+    if tpl_count == 0:
+        for idx, (tname, tkey, tqty, tunit, tdept) in enumerate(SEED_WEEKLY_TEMPLATE, start=1):
+            conn.execute(
+                """
+                INSERT INTO weekly_template_items (name, item_key, buy_qty, buy_unit, department, notes, is_active, sort_order, created_at)
+                VALUES (?, ?, ?, ?, ?, '', 1, ?, ?)
+                """,
+                (tname, tkey, tqty, tunit, tdept, idx, now),
+            )
+
+    # Seed pantry items if empty
+    pantry_count = conn.execute("SELECT COUNT(*) FROM pantry_items").fetchone()[0]
+    if pantry_count == 0:
+        for pname, pkey, pcat, pnote, pstock in SEED_PANTRY:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO pantry_items (name, item_key, category, quantity_note, in_stock, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (pname, pkey, pcat, pnote, pstock, now),
             )
 
     # Seed sample recipes if empty

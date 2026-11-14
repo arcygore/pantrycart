@@ -22,6 +22,15 @@ class CatalogPayload(BaseModel):
     is_pantry_staple: bool = False
 
 
+class UpsertStdPayload(BaseModel):
+    item_key: str = Field(min_length=1, max_length=120)
+    display_name: str = Field(min_length=1, max_length=120)
+    default_department: str = "Dry Goods"
+    package_size: float = Field(default=1.0, gt=0)
+    package_unit: str = "oz"
+    package_label: str = Field(min_length=1, max_length=120)
+
+
 def _serialize_cat(row) -> dict:
     return {
         "id": row["id"],
@@ -119,3 +128,45 @@ def delete_catalog_item(cat_id: int, user: dict = Depends(get_current_user)):
     with get_db() as conn:
         conn.execute("DELETE FROM product_catalog WHERE id = ?", (cat_id,))
     return {"ok": True}
+
+
+@router.post("/upsert-std")
+def upsert_standard_package(payload: UpsertStdPayload, user: dict = Depends(get_current_user)):
+    cname = normalize_item_key(payload.item_key)
+    with get_db() as conn:
+        existing = conn.execute("SELECT * FROM product_catalog WHERE canonical_name = ?", (cname,)).fetchone()
+        if existing:
+            conn.execute(
+                """
+                UPDATE product_catalog
+                SET package_size = ?, package_unit = ?, package_label = ?, default_department = ?
+                WHERE id = ?
+                """,
+                (
+                    payload.package_size,
+                    payload.package_unit.strip(),
+                    payload.package_label.strip(),
+                    payload.default_department.strip() or existing["default_department"],
+                    existing["id"],
+                ),
+            )
+            row = conn.execute("SELECT * FROM product_catalog WHERE id = ?", (existing["id"],)).fetchone()
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO product_catalog (
+                    canonical_name, display_name, aliases_json, default_department,
+                    package_size, package_unit, package_label, is_pantry_staple, store_type
+                ) VALUES (?, ?, '[]', ?, ?, ?, ?, 0, 'grocery')
+                """,
+                (
+                    cname,
+                    payload.display_name.strip(),
+                    payload.default_department.strip() or "Dry Goods",
+                    payload.package_size,
+                    payload.package_unit.strip(),
+                    payload.package_label.strip(),
+                ),
+            )
+            row = conn.execute("SELECT * FROM product_catalog WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _serialize_cat(row)
