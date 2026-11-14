@@ -1,0 +1,16 @@
+services:
+  pantrycart:
+    build: .
+    container_name: pantrycart
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # On Unraid, point this to /mnt/user/appdata/pantrycart:/app/data
+      - ./data:/app/data
+    environment:
+      - PANTRY_DB_PATH=/app/data/pantry.db
+      # "auto" detects HTTPS behind Cloudflare Tunnel while allowing local HTTP LAN
+      - COOKIE_SECURE=auto
+      # Optional: override session lifetime in days (default 90)
+      - SESSION_DAYS=90

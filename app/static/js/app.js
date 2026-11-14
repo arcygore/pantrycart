@@ -1,0 +1,147 @@
+import { api } from "./api.js";
+import { ICONS, esc, toast } from "./utils.js";
+import { renderAuthView } from "./views/auth.js";
+import { renderListsView } from "./views/lists.js";
+import { renderPlannerView } from "./views/planner.js";
+import { renderRecipesView } from "./views/recipes.js";
+import { renderSettingsView } from "./views/settings.js";
+import { renderStoresView } from "./views/stores.js";
+
+const NAV_ITEMS = [
+  { id: "lists", label: "Lists", icon: ICONS.list },
+  { id: "planner", label: "This Week", icon: ICONS.calendar },
+  { id: "recipes", label: "Recipes", icon: ICONS.book },
+  { id: "stores", label: "Stores", icon: ICONS.store },
+  { id: "settings", label: "Settings", icon: ICONS.settings },
+];
+
+const state = {
+  user: null,
+  view: "lists",
+  activeListId: null,
+  activeStoreId: null,
+  showChecked: false,
+  settingsTab: "household",
+};
+
+let activePollTimer = null;
+
+async function bootstrap() {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
+
+  const root = document.getElementById("app");
+  try {
+    const status = await api("/api/auth/status");
+    if (status.needs_setup || !status.user) {
+      renderAuthView(root, status.needs_setup, (user) => {
+        state.user = user;
+        renderShell();
+      });
+      return;
+    }
+    state.user = status.user;
+    renderShell();
+  } catch (err) {
+    root.innerHTML = `<div class="loading-screen"><p>Failed to connect: ${esc(err.message)}</p></div>`;
+  }
+}
+
+function renderShell() {
+  const root = document.getElementById("app");
+  root.innerHTML = `
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <img src="/static/icon.svg" alt="PantryCart" />
+          <span>PantryCart</span>
+        </div>
+        <nav class="sidebar-nav">
+          ${NAV_ITEMS.map((item) => `
+            <button class="sidebar-btn ${state.view === item.id ? "active" : ""}" data-nav="${item.id}">
+              ${item.icon}
+              <span>${item.label}</span>
+            </button>
+          `).join("")}
+        </nav>
+        <div class="sidebar-footer">
+          <span style="font-weight: 600;">${esc(state.user.display_name)}</span>
+          <span class="badge">@${esc(state.user.username)}</span>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="mobile-header">
+          <div class="brand-inline">
+            <img src="/static/icon.svg" alt="PantryCart" />
+            <span>PantryCart</span>
+          </div>
+          <span class="user-pill">${esc(state.user.display_name)}</span>
+        </header>
+        <div id="view-root"></div>
+      </main>
+
+      <nav class="bottom-nav">
+        ${NAV_ITEMS.map((item) => `
+          <button class="nav-btn ${state.view === item.id ? "active" : ""}" data-nav="${item.id}">
+            ${item.icon}
+            <span>${item.label}</span>
+          </button>
+        `).join("")}
+      </nav>
+    </div>
+  `;
+
+  document.querySelectorAll("[data-nav]").forEach((btn) => {
+    btn.addEventListener("click", () => navigate(btn.dataset.nav));
+  });
+
+  loadCurrentView();
+}
+
+function navigate(viewId) {
+  state.view = viewId;
+  document.querySelectorAll("[data-nav]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.nav === viewId);
+  });
+  loadCurrentView();
+}
+
+async function loadCurrentView() {
+  if (activePollTimer) {
+    clearInterval(activePollTimer);
+    activePollTimer = null;
+  }
+
+  const viewRoot = document.getElementById("view-root");
+  if (!viewRoot) return;
+  viewRoot.innerHTML = `<div class="loading-screen" style="min-height: 240px;"><div class="spinner"></div></div>`;
+
+  try {
+    if (state.view === "lists") {
+      activePollTimer = await renderListsView(viewRoot, state);
+    } else if (state.view === "planner") {
+      await renderPlannerView(viewRoot, state, navigate);
+    } else if (state.view === "recipes") {
+      await renderRecipesView(viewRoot, state);
+    } else if (state.view === "stores") {
+      await renderStoresView(viewRoot, state);
+    } else if (state.view === "settings") {
+      await renderSettingsView(viewRoot, state, async () => {
+        await api("/api/auth/logout", { method: "POST" });
+        state.user = null;
+        bootstrap();
+      });
+    }
+  } catch (err) {
+    if (err.status === 401) {
+      bootstrap();
+      return;
+    }
+    toast(err.message, true);
+    viewRoot.innerHTML = `<div class="card empty-state"><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+bootstrap();
