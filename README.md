@@ -23,7 +23,7 @@ services:
     container_name: pantrycart
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8095:8080"
     volumes:
       - /mnt/user/appdata/pantrycart:/app/data
     environment:
@@ -44,7 +44,7 @@ Then click **Compose Up**. To update later, run **Update Stack** / `docker compo
    docker compose up -d --build
    ```
 
-3. **Cloudflare Tunnel**: Point a public hostname (e.g., `groceries.yourdomain.com`) to `http://<UNRAID-IP>:8080`.
+3. **Cloudflare Tunnel**: Point a public hostname (e.g., `groceries.yourdomain.com`) to `http://<UNRAID-IP>:8095`.
 4. **First-Time Setup**: Open the URL in your browser, create your admin account, then go to **Settings → Household Accounts → + Add Member** to create your wife's login.
 5. **Phone App Feel (PWA)**: On iOS Safari tap **Share → Add to Home Screen** (or Android Chrome **Install App**).
 
