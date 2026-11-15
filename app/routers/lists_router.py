@@ -1,3 +1,4 @@
+import html
 import json
 import re
 from typing import Optional
@@ -82,28 +83,51 @@ def natural_sort_key(text: str) -> tuple:
     return (0, key)
 
 
+DEPT_SYNONYM_GROUPS = [
+    {"produce", "fruit", "fruits", "vegetable", "vegetables", "veggies", "greens", "walk-in", "floral"},
+    {"bakery", "deli", "bread", "prepared"},
+    {"meat", "seafood", "butcher", "poultry", "fish", "beef", "chicken", "pork"},
+    {"dry", "pantry", "center", "aisle", "aisles", "canned", "pasta", "grains", "baking", "spices", "cereal"},
+    {"dairy", "egg", "eggs", "refrigerated", "chilled", "cheese", "milk", "butter", "yogurt"},
+    {"frozen", "freezer"},
+    {"beverage", "beverages", "drinks", "drink", "coffee", "tea", "soda", "water", "wine", "beer", "snacks"},
+    {"household", "paper", "cleaning", "personal", "pharmacy", "whole body", "health", "pet", "baby"},
+]
+
+
 def resolve_store_department(raw_dept: str, store_departments: list[str]) -> str:
-    if not store_departments:
-        return raw_dept or "Other"
-    if not raw_dept:
-        return "Other" if "Other" in store_departments else store_departments[-1]
-    if raw_dept in store_departments:
-        return raw_dept
-    rl = raw_dept.lower()
-    for d in store_departments:
+    clean_depts = [html.unescape(d).strip() for d in store_departments if d and d.strip()]
+    if not clean_depts:
+        return html.unescape(raw_dept).strip() or "Other"
+    if not raw_dept or not raw_dept.strip():
+        return "Other" if "Other" in clean_depts else clean_depts[-1]
+
+    rd = html.unescape(raw_dept).strip()
+    if rd in clean_depts:
+        return rd
+    rl = rd.lower()
+    for d in clean_depts:
         if d.lower() == rl:
             return d
-    # Fuzzy keyword bridge across store chains (e.g. Kroger "Bakery & Deli" <-> Publix "Deli & Bakery" <-> Costco "Bakery")
-    tokens = [t for t in re.split(r"[^a-z]+", rl) if len(t) >= 4 and t != "goods"]
-    for d in store_departments:
+
+    # Direct word overlap (words >= 3 chars, excluding filler words)
+    stop_words = {"and", "the", "for", "with", "goods", "section", "department"}
+    tokens = [t for t in re.split(r"[^a-z]+", rl) if len(t) >= 3 and t not in stop_words]
+    for d in clean_depts:
         dl = d.lower()
-        if any(tok in dl for tok in tokens):
+        d_tokens = set(re.split(r"[^a-z]+", dl))
+        if any(tok in d_tokens or tok in dl for tok in tokens):
             return d
-    if "dry" in rl:
-        for d in store_departments:
-            if "dry" in d.lower() or "center" in d.lower() or "pantry" in d.lower():
-                return d
-    return "Other" if "Other" in store_departments else store_departments[-1]
+
+    # Synonym group bridge across chains (e.g. "Pantry" <-> "Dry Goods" <-> "Center Aisles")
+    for group in DEPT_SYNONYM_GROUPS:
+        if any(tok in group or any(g in rl for g in group) for tok in tokens):
+            for d in clean_depts:
+                dl = d.lower()
+                if any(g in dl for g in group):
+                    return d
+
+    return "Other" if "Other" in clean_depts else clean_depts[-1]
 
 
 def build_list_response(conn, list_row) -> dict:
@@ -113,8 +137,10 @@ def build_list_response(conn, list_row) -> dict:
     if list_row["store_id"]:
         srow = conn.execute("SELECT * FROM stores WHERE id = ?", (list_row["store_id"],)).fetchone()
         if srow:
-            store_depts = json.loads(srow["departments_json"] or "[]") or list(GROCERY_DEPARTMENTS)
-            aisle_depts = json.loads(srow["aisle_departments_json"] or "[]")
+            raw_depts = json.loads(srow["departments_json"] or "[]") or list(GROCERY_DEPARTMENTS)
+            store_depts = [html.unescape(d).strip() for d in raw_depts if d and d.strip()]
+            raw_adepts = json.loads(srow["aisle_departments_json"] or "[]")
+            aisle_depts = [html.unescape(d).strip() for d in raw_adepts if d and d.strip()]
             store = {
                 "id": srow["id"],
                 "name": srow["name"],
@@ -133,7 +159,7 @@ def build_list_response(conn, list_row) -> dict:
         loc_map = {r["item_key"]: dict(r) for r in loc_rows}
 
     catalog_rows = [dict(r) for r in conn.execute("SELECT * FROM product_catalog").fetchall()]
-    dept_order = {d: idx for idx, d in enumerate(store_depts)}
+    dept_order = {d.lower(): idx for idx, d in enumerate(store_depts)}
 
     item_rows = conn.execute(
         """
@@ -154,11 +180,12 @@ def build_list_response(conn, list_row) -> dict:
             eff_aisle = loc["aisle"]
         else:
             raw_dept = r["department"]
-            if not raw_dept:
+            if not raw_dept or raw_dept == "Other":
                 cat = match_catalog_item(r["name"], catalog_rows)
-                raw_dept = cat["default_department"] if cat else "Other"
-            eff_dept = resolve_store_department(raw_dept, store_depts)
-            eff_aisle = r["aisle"]
+                if cat:
+                    raw_dept = cat["default_department"]
+            eff_dept = resolve_store_department(raw_dept or "Other", store_depts)
+            eff_aisle = "" if store else r["aisle"]
 
         enriched.append(
             {
@@ -184,7 +211,7 @@ def build_list_response(conn, list_row) -> dict:
     enriched.sort(
         key=lambda item: (
             1 if item["checked"] else 0,
-            dept_order.get(item["department"], 999),
+            dept_order.get((item["department"] or "").strip().lower(), 999),
             natural_sort_key(item["aisle"]),
             item["name"].lower(),
         )
@@ -429,7 +456,7 @@ def update_shopping_list(list_id: int, payload: UpdateListPayload, user: dict = 
             raise HTTPException(status_code=404, detail="Shopping list not found")
         name = payload.name.strip() if payload.name is not None else row["name"]
         ltype = payload.list_type if payload.list_type is not None else row["list_type"]
-        sid = payload.store_id if payload.store_id is not None else row["store_id"]
+        sid = payload.store_id if "store_id" in payload.model_fields_set else row["store_id"]
         arch = (1 if payload.is_archived else 0) if payload.is_archived is not None else row["is_archived"]
         conn.execute(
             """

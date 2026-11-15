@@ -40,6 +40,7 @@ export async function renderRecipesView(container, state) {
         <form id="scrape-form" class="row-wrap">
           <input class="input grow" id="scrape-url-input" type="url" placeholder="Paste a recipe URL to auto-import photo, ingredients & steps (https://...)" required />
           <button class="btn btn-accent" type="submit" id="scrape-btn">Import from URL</button>
+          <button class="btn" type="button" id="paste-recipe-btn" title="Paste copied recipe text or HTML if a website blocks automatic scraping">Paste Text / HTML</button>
         </form>
         <input class="input" id="recipe-search" value="${esc(search)}" placeholder="Search recipes by title, tag, or ingredient..." />
       </div>
@@ -80,23 +81,29 @@ export async function renderRecipesView(container, state) {
 
     document.getElementById("new-recipe-btn")?.addEventListener("click", () => openRecipeEditor(null, false));
     document.getElementById("bulk-import-recipes-btn")?.addEventListener("click", openBulkImportModal);
+    document.getElementById("paste-recipe-btn")?.addEventListener("click", () => {
+      const urlVal = document.getElementById("scrape-url-input")?.value.trim() || "";
+      openQuickPasteModal(urlVal, "");
+    });
 
     document.getElementById("scrape-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const urlInput = document.getElementById("scrape-url-input");
+      const targetUrl = urlInput.value.trim();
       const btn = document.getElementById("scrape-btn");
       btn.disabled = true;
       btn.textContent = "Importing...";
       try {
         const scraped = await api("/api/recipes/scrape", {
           method: "POST",
-          body: { url: urlInput.value.trim() },
+          body: { url: targetUrl },
         });
         urlInput.value = "";
         toast("Recipe imported! Review & save below.");
         openRecipeEditor(scraped, true);
       } catch (err) {
         toast(err.message, true);
+        openQuickPasteModal(targetUrl, err.message);
       } finally {
         btn.disabled = false;
         btn.textContent = "Import from URL";
@@ -119,6 +126,56 @@ export async function renderRecipesView(container, state) {
           body: { recipe_id: Number(btn.dataset.id), scale: 1 },
         });
         toast("Added to This Week's Menu!");
+      });
+    });
+  }
+
+  function openQuickPasteModal(prefillUrl = "", errorReason = "") {
+    openModal("Quick Paste Recipe Import", `
+      <form id="quick-paste-form" class="stack-md">
+        ${errorReason ? `
+          <div class="card" style="padding: 10px 12px; background: var(--accent-soft); border-color: #fcd34d; color: #92400e; font-size: 0.85rem;">
+            <strong>Direct URL fetch was blocked by the website's firewall:</strong> ${esc(errorReason)}<br/>
+            You can still import it in seconds: open the recipe page in your browser, copy either the recipe text or the page HTML source (<code>Ctrl+U</code> &rarr; <code>Ctrl+A</code> &rarr; <code>Ctrl+C</code>), and paste it below!
+          </div>
+        ` : `
+          <p class="small muted" style="margin: 0;">
+            Paste copied recipe text (with Ingredients &amp; Instructions) or full page HTML source (<code>Ctrl+U</code>) to automatically extract the title, photo, ingredients, and steps.
+          </p>
+        `}
+        <div>
+          <label class="field-label">Source URL (optional)</label>
+          <input class="input" name="source_url" value="${esc(prefillUrl)}" placeholder="https://..." />
+        </div>
+        <div>
+          <label class="field-label">Pasted Recipe Text or Page HTML Source</label>
+          <textarea class="textarea" name="raw_content" style="min-height: 200px;" placeholder="Paste copied recipe text or HTML source here..." required></textarea>
+        </div>
+        <button class="btn btn-primary" type="submit" id="parse-paste-btn">Parse &amp; Open Recipe Editor</button>
+      </form>
+    `, (close) => {
+      document.getElementById("quick-paste-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = e.target;
+        const btn = document.getElementById("parse-paste-btn");
+        btn.disabled = true;
+        btn.textContent = "Parsing...";
+        try {
+          const parsed = await api("/api/recipes/parse-content", {
+            method: "POST",
+            body: {
+              raw_content: f.raw_content.value,
+              source_url: f.source_url.value.trim(),
+            },
+          });
+          close();
+          toast("Parsed recipe! Review & save below.");
+          openRecipeEditor(parsed, true);
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+          btn.textContent = "Parse & Open Recipe Editor";
+        }
       });
     });
   }

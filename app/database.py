@@ -132,6 +132,18 @@ CREATE TABLE IF NOT EXISTS meal_plan_items (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS meal_calendar_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day_name TEXT NOT NULL,
+    meal_slot TEXT NOT NULL,
+    plan_item_id INTEGER REFERENCES meal_plan_items(id) ON DELETE CASCADE,
+    custom_title TEXT NOT NULL DEFAULT '',
+    servings_used REAL NOT NULL DEFAULT 1.0,
+    person_name TEXT NOT NULL DEFAULT 'Everyone',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS shopping_lists (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,

@@ -1,3 +1,4 @@
+import html
 import json
 from typing import Optional
 
@@ -42,13 +43,15 @@ class LocationUpsertPayload(BaseModel):
 
 
 def _serialize_store(row) -> dict:
+    raw_depts = json.loads(row["departments_json"] or "[]")
+    raw_adepts = json.loads(row["aisle_departments_json"] or "[]")
     return {
         "id": row["id"],
         "name": row["name"],
         "store_type": row["store_type"],
         "chain": row["chain"],
-        "departments": json.loads(row["departments_json"] or "[]"),
-        "aisle_departments": json.loads(row["aisle_departments_json"] or "[]"),
+        "departments": [html.unescape(d).strip() for d in raw_depts if d and d.strip()],
+        "aisle_departments": [html.unescape(d).strip() for d in raw_adepts if d and d.strip()],
         "is_default": bool(row["is_default"]),
         "sort_order": row["sort_order"],
         "created_at": row["created_at"],
@@ -83,8 +86,8 @@ def reorder_stores(payload: StoreReorderPayload, user: dict = Depends(get_curren
 @router.post("")
 def create_store(payload: StorePayload, user: dict = Depends(get_current_user)):
     now = utc_now_iso()
-    depts = [d.strip() for d in payload.departments if d.strip()] or list(GROCERY_DEPARTMENTS)
-    aisle_depts = [d.strip() for d in payload.aisle_departments if d.strip()]
+    depts = [html.unescape(d).strip() for d in payload.departments if d.strip()] or list(GROCERY_DEPARTMENTS)
+    aisle_depts = [html.unescape(d).strip() for d in payload.aisle_departments if d.strip()]
     with get_db() as conn:
         max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM stores").fetchone()[0]
         cur = conn.execute(
@@ -124,6 +127,7 @@ def create_store(payload: StorePayload, user: dict = Depends(get_current_user)):
 
 @router.put("/{store_id}")
 def update_store(store_id: int, payload: StoreUpdatePayload, user: dict = Depends(get_current_user)):
+    now = utc_now_iso()
     with get_db() as conn:
         row = conn.execute("SELECT * FROM stores WHERE id = ?", (store_id,)).fetchone()
         if not row:
@@ -132,12 +136,12 @@ def update_store(store_id: int, payload: StoreUpdatePayload, user: dict = Depend
         stype = payload.store_type.strip() if payload.store_type is not None else row["store_type"]
         chain = payload.chain.strip() if payload.chain is not None else row["chain"]
         depts = (
-            json.dumps([d.strip() for d in payload.departments if d.strip()])
+            json.dumps([html.unescape(d).strip() for d in payload.departments if d.strip()])
             if payload.departments is not None
             else row["departments_json"]
         )
         adepts = (
-            json.dumps([d.strip() for d in payload.aisle_departments if d.strip()])
+            json.dumps([html.unescape(d).strip() for d in payload.aisle_departments if d.strip()])
             if payload.aisle_departments is not None
             else row["aisle_departments_json"]
         )
@@ -151,6 +155,7 @@ def update_store(store_id: int, payload: StoreUpdatePayload, user: dict = Depend
         )
         if payload.position is not None:
             _reposition_store(conn, store_id, payload.position)
+        conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE store_id = ?", (now, store_id))
         updated = conn.execute("SELECT * FROM stores WHERE id = ?", (store_id,)).fetchone()
     return _serialize_store(updated)
 
@@ -199,8 +204,9 @@ def upsert_store_location(store_id: int, payload: LocationUpsertPayload, user: d
                 aisle = excluded.aisle,
                 updated_at = excluded.updated_at
             """,
-            (ikey, payload.item_display.strip(), store_id, payload.department.strip(), payload.aisle.strip(), now),
+            (ikey, payload.item_display.strip(), store_id, html.unescape(payload.department).strip(), payload.aisle.strip(), now),
         )
+        conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE store_id = ?", (now, store_id))
         row = conn.execute(
             "SELECT * FROM item_store_locations WHERE store_id = ? AND item_key = ?",
             (store_id, ikey),
@@ -210,6 +216,8 @@ def upsert_store_location(store_id: int, payload: LocationUpsertPayload, user: d
 
 @router.delete("/{store_id}/locations/{loc_id}")
 def delete_store_location(store_id: int, loc_id: int, user: dict = Depends(get_current_user)):
+    now = utc_now_iso()
     with get_db() as conn:
         conn.execute("DELETE FROM item_store_locations WHERE id = ? AND store_id = ?", (loc_id, store_id))
+        conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE store_id = ?", (now, store_id))
     return {"ok": True}

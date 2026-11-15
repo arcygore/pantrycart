@@ -927,3 +927,143 @@ a {
 .btn-link-inline:hover {
   background: #fde68a;
 }
+
+/* High-Visibility Separate Quantity Pill & Unit Pill (FB-08) */
+.qty-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.88rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  background: #1b4332;
+  padding: 2px 9px;
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgba(27, 67, 50, 0.18);
+  line-height: 1.35;
+}
+
+.qty-badge.multi {
+  background: #d97706;
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(217, 119, 6, 0.28);
+}
+
+.unit-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border: 1px solid #cce3d6;
+  padding: 1px 8px;
+  border-radius: 6px;
+  line-height: 1.35;
+}
+
+/* Weekly Meal Calendar & Servings Pool (FB-11) */
+.servings-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  border: 1px solid #cce3d6;
+}
+
+.servings-pill.done {
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+@media (min-width: 720px) {
+  .calendar-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1020px) {
+  .calendar-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.day-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-sm);
+}
+
+.day-card-header {
+  background: var(--surface-alt);
+  padding: 9px 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  font-weight: 800;
+  font-size: 0.92rem;
+}
+
+.meal-slot-section {
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--surface-alt);
+}
+
+.meal-slot-section:last-child {
+  border-bottom: none;
+}
+
+.meal-slot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.slot-entry {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-top: 5px;
+  font-size: 0.84rem;
+}
+
+.person-tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e0e7ff;
+  color: #3730a3;
+}
+

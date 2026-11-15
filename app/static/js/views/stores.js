@@ -55,14 +55,18 @@ export async function renderStoresView(container, state) {
               </div>
               <button class="btn btn-sm" id="edit-store-btn">Edit Store &amp; Position</button>
             </div>
-            <p class="small muted" style="margin: 0;">Walking order from top to bottom. Items in aisle-enabled departments sort by aisle number.</p>
+            <p class="small muted" style="margin: 0;">Walking order from top to bottom. Use ↑ / ↓ to adjust your walking path anytime, or click Edit Store to add/rename sections.</p>
             <div class="stack-sm">
               ${activeStore.departments.map((d, idx) => {
                 const usesAisle = activeStore.aisle_departments.includes(d);
                 return `
                   <div class="row" style="justify-content: space-between; padding: 7px 10px; background: var(--bg); border-radius: 8px;">
                     <span><strong>${idx + 1}.</strong> ${esc(d)}</span>
-                    ${usesAisle ? `<span class="badge badge-accent">Sorted by Aisle</span>` : `<span class="badge">Section</span>`}
+                    <div class="row" style="gap: 6px;">
+                      ${usesAisle ? `<span class="badge badge-accent">Sorted by Aisle</span>` : `<span class="badge">Section</span>`}
+                      <button class="btn btn-sm move-dept-up" data-idx="${idx}" ${idx === 0 ? "disabled" : ""} title="Move department earlier in walking path">↑</button>
+                      <button class="btn btn-sm move-dept-down" data-idx="${idx}" ${idx === activeStore.departments.length - 1 ? "disabled" : ""} title="Move department later in walking path">↓</button>
+                    </div>
                   </div>
                 `;
               }).join("")}
@@ -113,6 +117,38 @@ export async function renderStoresView(container, state) {
         state.activeStoreId = Number(btn.dataset.storeId);
         locations = await api(`/api/stores/${state.activeStoreId}/locations`);
         render();
+      });
+    });
+
+    document.querySelectorAll(".move-dept-up").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!activeStore) return;
+        const i = Number(btn.dataset.idx);
+        const depts = [...activeStore.departments];
+        [depts[i - 1], depts[i]] = [depts[i], depts[i - 1]];
+        await api(`/api/stores/${activeStore.id}`, {
+          method: "PUT",
+          body: { departments: depts },
+        });
+        stores = await api("/api/stores");
+        render();
+        toast("Walking path updated!");
+      });
+    });
+
+    document.querySelectorAll(".move-dept-down").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!activeStore) return;
+        const i = Number(btn.dataset.idx);
+        const depts = [...activeStore.departments];
+        [depts[i + 1], depts[i]] = [depts[i], depts[i + 1]];
+        await api(`/api/stores/${activeStore.id}`, {
+          method: "PUT",
+          body: { departments: depts },
+        });
+        stores = await api("/api/stores");
+        render();
+        toast("Walking path updated!");
       });
     });
 
@@ -211,13 +247,14 @@ export async function renderStoresView(container, state) {
           <div>
             <label class="field-label">Departments (one per line, in walking order)</label>
             <textarea class="textarea" name="departments" style="min-height: 150px;">Produce
-Bakery &amp; Deli
-Meat &amp; Seafood
+Bakery & Deli
+Meat & Seafood
 Dry Goods
+Snacks & Chips
 Beverages
 Frozen
-Dairy &amp; Eggs
-Household &amp; Personal
+Dairy & Eggs
+Household & Personal
 Other</textarea>
           </div>
           <div>

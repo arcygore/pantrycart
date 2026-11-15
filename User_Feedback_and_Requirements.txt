@@ -65,6 +65,41 @@
     - Pantry items are organized into category tabs: **Spices & Seasonings**, **Canned & Jarred Goods**, **Oils, Vinegars & Condiments**, **Baking & Cooking Staples**, **Grains, Pasta & Dry Goods**, and **Snacks & Other**, with one-tap **Mark Low / Mark In Stock** and **+ To List** buttons.
     - **Settings → US Store Package Sizes** now focuses strictly on store package sizes without mixing in pantry inventory.
 
+- [ ] **FB-08 (DO): Make quantity much more visible (separate bold pill from the green unit/package pill)**
+  - **Agent Resolution Note:**
+    - Replaced the combined `.item-qty` tag with two distinct pills in `app/static/css/styles.css`, `app/static/js/views/lists.js`, and `app/static/js/views/planner.js`:
+      1. **Quantity Badge (`.qty-badge`)**: Placed right in front of the item name (`1×`, `2×`, etc.) with bold `800` weight and high-contrast dark forest green (`#1b4332`) for `1×`, and high-visibility warm amber (`#d97706`) whenever `buy_qty > 1` so multi-item purchases immediately stand out while you shop.
+      2. **Package/Unit Pill (`.unit-pill`)**: Separate soft green pill after the item name showing the package size/unit (e.g., `15 oz can`, `1 lb pack`).
+
+- [ ] **FB-09 (DO): Make the Weekly Template items editable (not just delete and add new ones)**
+  - **Agent Resolution Note:**
+    - In **Shopping Lists → Weekly Template** (`app/static/js/views/lists.js`), added an **Edit** button on every template item row.
+    - Clicking **Edit** opens an inline editor right on that row where you can modify the **Item Name**, **Quantity**, **Unit/Package**, and **Department**, and click **Save** (via `PATCH /api/lists/template/items/{id}`).
+
+- [ ] **FB-10 (DO): Fix store layout updates and store switching so the shopping list immediately updates to the selected store's walking path**
+  - **Agent Resolution Note:**
+    - **Backend (`app/routers/lists_router.py` & `app/routers/stores_router.py`)**:
+      - Fixed HTML entity escaping (`"Bakery &amp; Deli"` vs `"Bakery & Deli"`) so department names always match cleanly.
+      - Upgraded `resolve_store_department` with synonym bridging across store types (e.g., mapping `Frozen` ↔ `Frozen Foods`, `Dry Goods` ↔ `Pantry / Dry Goods`) and catalog fallback so switching from Store A to Store B re-sorts every item into Store B's departments and aisles without leaking Store A's old aisle numbers.
+      - Fixed `PATCH /api/lists/{list_id}` (`model_fields_set`) and touched `shopping_lists.updated_at` whenever a store layout or aisle map is edited.
+    - **Frontend (`app/static/js/views/lists.js` & `app/static/js/views/stores.js`)**:
+      - Seeded `deptGroups` strictly in `activeList.store.departments` order (with `#1`, `#2`, ... walking-order badges on each section header) instead of item arrival order.
+      - Added one-tap **↑ / ↓** buttons right on each department row in **Stores & Aisle Maps** so you can adjust a store's walking order on the fly.
+
+- [ ] **FB-11 (DO): Redesign the meal planner calendar with optional Breakfast / Lunch / Dinner / Snacks per day, remaining servings counters, list snack integration, and per-person meal/leftover assignment**
+  - **Agent Resolution Note:**
+    - Added the `meal_calendar_slots` table in `app/database.py` and `/api/planner/calendar` endpoints in `app/routers/planner_router.py`.
+    - **This Week's Menu & Servings Pool (`app/static/js/views/planner.js`)**: Each selected recipe now shows a calm pill (`2x of 4 servings left` or `All 4 servings placed ✓`) with no intrusive warnings, plus a **+ Place on Day** button.
+    - **Optional Weekly Meal & Leftover Calendar (`Mon`–`Sun`)**:
+      - Each day card has optional **Breakfast**, **Lunch**, **Dinner**, and **Snacks** sections.
+      - Clicking **+ Add** lets you pick from **This Week's Recipes** (automatically deducting from remaining servings), **Snacks & List Items** (pulled from your active shopping list and weekly template), or a **Custom / Leftover** entry.
+      - Includes a **Who is eating this?** selector (`Everyone`, household member pills, or any custom name) so one person can eat leftover soup while another eats a different meal on the same day.
+
+- [ ] **FB-12 (DO): Fix `403 Forbidden` when importing recipes from sites like BudgetBytes (`https://www.budgetbytes.com/bacon-spinach-pasta-parmesan/`)**
+  - **Agent Resolution Note:**
+    - **Automatic WordPress REST API Fallback (`app/scraper.py`)**: Many recipe sites (including BudgetBytes) run on WordPress behind Cloudflare rules that block server-side HTML fetches (`403`) while leaving the public WordPress REST API (`/wp-json/wp/v2/posts?slug=...`) open. When direct HTML scraping returns `403`, PantryCart now automatically queries the site's WP REST API and extracts the full recipe (title, photo, times, servings, ingredients, and steps) from Yoast Schema.org JSON-LD and WP Recipe Maker HTML blocks.
+    - **Quick Paste Text/HTML Fallback (`POST /api/recipes/parse-content` & `app/static/js/views/recipes.js`)**: Added a **Paste Text / HTML** button (and automatic modal fallback if a non-WordPress site still blocks server IPs) so you can paste copied recipe text or page HTML source (`Ctrl+U`) to parse and open directly in the Recipe Editor.
+
 ---
 
 ## 📋 BACKLOG / LONG-TERM FEATURES

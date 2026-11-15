@@ -17,14 +17,27 @@ export async function renderListsView(container, state) {
     const uncheckedItems = (activeList?.items || []).filter((i) => !i.checked);
     const checkedItems = (activeList?.items || []).filter((i) => i.checked);
     const activeTplCount = templateItems.filter((t) => t.is_active).length;
+    const storeDepts = activeList?.store?.departments || [];
     const aisleDepts = new Set(activeList?.store?.aisle_departments || ["Dry Goods"]);
 
+    // Seed deptGroups strictly in the store's walking-path order first (FB-10)
     const deptGroups = new Map();
-    for (const item of uncheckedItems) {
-      const d = item.department || "Other";
-      if (!deptGroups.has(d)) deptGroups.set(d, []);
-      deptGroups.get(d).push(item);
+    for (const d of storeDepts) {
+      deptGroups.set(d, []);
     }
+    for (const item of uncheckedItems) {
+      const rawDept = (item.department || "Other").trim();
+      let targetDept = rawDept;
+      for (const sd of storeDepts) {
+        if (sd.toLowerCase() === rawDept.toLowerCase()) {
+          targetDept = sd;
+          break;
+        }
+      }
+      if (!deptGroups.has(targetDept)) deptGroups.set(targetDept, []);
+      deptGroups.get(targetDept).push(item);
+    }
+    const nonEmptyDeptGroups = Array.from(deptGroups.entries()).filter(([, items]) => items.length > 0);
 
     container.innerHTML = `
       <div class="page-header">
@@ -84,13 +97,13 @@ export async function renderListsView(container, state) {
           </div>
         ` : `
           <div class="stack-md">
-            ${Array.from(deptGroups.entries()).map(([dept, items]) => {
+            ${nonEmptyDeptGroups.map(([dept, items], walkIdx) => {
               const usesAisles = aisleDepts.has(dept);
               let lastAisleKey = null;
               return `
                 <div class="dept-card">
                   <div class="dept-header">
-                    <span>${esc(dept)}</span>
+                    <span>${activeList.store ? `<span class="muted" style="font-weight:600;margin-right:5px;">#${walkIdx + 1}</span>` : ""}${esc(dept)}</span>
                     <span>${items.length}</span>
                   </div>
                   ${items.map((item) => {
@@ -134,7 +147,8 @@ export async function renderListsView(container, state) {
   }
 
   function renderItemRow(item, store) {
-    const qtyStr = item.buy_qty ? `${fmtQty(item.buy_qty)}${item.buy_unit ? " " + item.buy_unit : ""}` : "";
+    const qtyNum = Number(item.buy_qty) || 1;
+    const isMulti = qtyNum > 1;
     const recipeText = item.source_recipes?.length ? `For: ${item.source_recipes.join(", ")}` : "";
     const aisleText = item.aisle ? `Aisle ${item.aisle}` : (store ? "+ Aisle" : "");
     return `
@@ -144,8 +158,9 @@ export async function renderListsView(container, state) {
         </button>
         <div class="item-main">
           <div class="item-title-line">
+            <span class="qty-badge ${isMulti ? "multi" : ""}" title="Quantity">${fmtQty(qtyNum)}×</span>
             <span class="item-name">${esc(item.name)}</span>
-            ${qtyStr ? `<span class="item-qty">${esc(qtyStr)}</span>` : ""}
+            ${item.buy_unit ? `<span class="unit-pill">${esc(item.buy_unit)}</span>` : ""}
           </div>
           ${(item.needed_summary || recipeText || item.notes) ? `
             <div class="item-meta">
@@ -165,6 +180,13 @@ export async function renderListsView(container, state) {
   }
 
   function openTemplateManagerModal() {
+    let editingTplId = null;
+    const allDepts = Array.from(new Set([
+      ...(activeList?.store?.departments || []),
+      "Produce", "Bakery & Deli", "Meat & Seafood", "Dry Goods",
+      "Snacks & Chips", "Beverages", "Frozen", "Dairy & Eggs", "Household & Personal", "Other",
+    ]));
+
     const renderModalBody = () => `
       <div class="stack-md">
         <p class="small muted" style="margin: 0;">
@@ -178,19 +200,50 @@ export async function renderListsView(container, state) {
           <button class="btn btn-primary btn-sm" type="submit">+ Add</button>
         </form>
 
-        <div class="stack-sm" style="max-height: 300px; overflow-y: auto;">
-          ${templateItems.map((t) => `
-            <div class="row" style="justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px;">
-              <label class="row grow" style="cursor: pointer;">
-                <input type="checkbox" class="tpl-toggle" data-id="${t.id}" ${t.is_active ? "checked" : ""} />
-                <div>
-                  <div style="font-weight: 700;">${esc(t.name)} <span class="item-qty">${fmtQty(t.buy_qty)} ${esc(t.buy_unit)}</span></div>
-                  <div class="small muted">${esc(t.department)}</div>
+        <div class="stack-sm" style="max-height: 360px; overflow-y: auto;">
+          ${templateItems.map((t) => {
+            if (editingTplId === t.id) {
+              const itemDepts = allDepts.includes(t.department) ? allDepts : [t.department, ...allDepts];
+              return `
+                <form class="tpl-edit-form stack-sm" data-id="${t.id}" style="padding: 10px; border: 2px solid var(--primary); border-radius: 9px; background: var(--surface-alt);">
+                  <div class="row-wrap">
+                    <input class="input grow" name="name" value="${esc(t.name)}" placeholder="Item name" required style="min-width: 150px;" />
+                    <input class="input" name="buy_qty" type="number" step="0.25" min="0.25" value="${esc(t.buy_qty)}" style="width: 78px;" required />
+                    <input class="input" name="buy_unit" value="${esc(t.buy_unit)}" placeholder="Unit (e.g. bunch, 1 lb pack)" style="width: 145px;" />
+                  </div>
+                  <div class="row-wrap" style="justify-content: space-between;">
+                    <select class="select" name="department" style="width: auto; min-width: 170px; min-height: 34px;">
+                      ${itemDepts.map((d) => `<option value="${esc(d)}" ${d === t.department ? "selected" : ""}>${esc(d)}</option>`).join("")}
+                    </select>
+                    <div class="row" style="gap: 6px;">
+                      <button class="btn btn-sm tpl-cancel-edit" type="button">Cancel</button>
+                      <button class="btn btn-sm btn-primary" type="submit">Save</button>
+                    </div>
+                  </div>
+                </form>
+              `;
+            }
+            const qNum = Number(t.buy_qty) || 1;
+            return `
+              <div class="row" style="justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px;">
+                <label class="row grow" style="cursor: pointer;">
+                  <input type="checkbox" class="tpl-toggle" data-id="${t.id}" ${t.is_active ? "checked" : ""} />
+                  <div>
+                    <div class="row-wrap" style="gap: 6px;">
+                      <span class="qty-badge ${qNum > 1 ? "multi" : ""}">${fmtQty(qNum)}×</span>
+                      <span style="font-weight: 700;">${esc(t.name)}</span>
+                      ${t.buy_unit ? `<span class="unit-pill">${esc(t.buy_unit)}</span>` : ""}
+                    </div>
+                    <div class="small muted">${esc(t.department)}</div>
+                  </div>
+                </label>
+                <div class="row" style="gap: 5px;">
+                  <button class="btn btn-sm tpl-edit-btn" data-id="${t.id}" type="button" title="Edit template item">Edit</button>
+                  <button class="btn btn-sm btn-danger tpl-del-btn" data-id="${t.id}" type="button" title="Delete template item">✕</button>
                 </div>
-              </label>
-              <button class="btn btn-sm btn-danger tpl-del-btn" data-id="${t.id}" type="button">✕</button>
-            </div>
-          `).join("")}
+              </div>
+            `;
+          }).join("")}
         </div>
 
         ${activeList ? `
@@ -228,6 +281,44 @@ export async function renderListsView(container, state) {
             });
             templateItems = await api("/api/lists/template/items");
             render();
+          });
+        });
+
+        document.querySelectorAll(".tpl-edit-btn").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            editingTplId = Number(btn.dataset.id);
+            document.getElementById("modal-body").innerHTML = renderModalBody();
+            bindTplModal();
+          });
+        });
+
+        document.querySelectorAll(".tpl-cancel-edit").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            editingTplId = null;
+            document.getElementById("modal-body").innerHTML = renderModalBody();
+            bindTplModal();
+          });
+        });
+
+        document.querySelectorAll(".tpl-edit-form").forEach((form) => {
+          form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const id = Number(form.dataset.id);
+            await api(`/api/lists/template/items/${id}`, {
+              method: "PATCH",
+              body: {
+                name: form.name.value.trim(),
+                buy_qty: Number(form.buy_qty.value) || 1,
+                buy_unit: form.buy_unit.value.trim(),
+                department: form.department.value,
+              },
+            });
+            editingTplId = null;
+            templateItems = await api("/api/lists/template/items");
+            document.getElementById("modal-body").innerHTML = renderModalBody();
+            bindTplModal();
+            render();
+            toast("Template item updated!");
           });
         });
 

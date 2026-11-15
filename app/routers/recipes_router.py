@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import get_current_user, utc_now_iso
 from app.database import get_db
-from app.scraper import scrape_recipe_url
+from app.scraper import parse_recipe_html_or_text, scrape_recipe_url
 from app.units import match_catalog_item, parse_ingredient_line
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"])
@@ -36,6 +36,11 @@ class RecipePayload(BaseModel):
 
 class ScrapePayload(BaseModel):
     url: str
+
+
+class ParseContentPayload(BaseModel):
+    content: str = Field(min_length=5)
+    source_url: str = ""
 
 
 def _serialize_recipe(conn, row) -> dict:
@@ -94,10 +99,20 @@ async def scrape_recipe(payload: ScrapePayload, user: dict = Depends(get_current
     try:
         data = await scrape_recipe_url(payload.url)
         return data
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to fetch recipe page: {exc}")
+
+
+@router.post("/parse-content")
+def parse_recipe_content(payload: ParseContentPayload, user: dict = Depends(get_current_user)):
+    try:
+        return parse_recipe_html_or_text(payload.content, payload.source_url.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/{recipe_id}")

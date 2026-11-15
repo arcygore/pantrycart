@@ -12,10 +12,21 @@ from app.units import parse_ingredient_line
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://www.google.com/",
+    "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "cross-site",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 
@@ -135,13 +146,14 @@ def _extract_fallback_image(soup: BeautifulSoup, base_url: str) -> str:
         ("meta[property='og:image']", "content"),
         ("meta[name='twitter:image']", "content"),
         (".wprm-recipe-image img", "src"),
+        (".tasty-recipes-image img", "src"),
         ("img[itemprop='image']", "src"),
     ]:
         el = soup.select_one(sel)
         if el and el.get(attr):
             raw = str(el.get(attr)).strip()
             if raw:
-                return urljoin(base_url, raw)
+                return urljoin(base_url, raw) if base_url else raw
     return ""
 
 
@@ -153,7 +165,6 @@ def _extract_tags(recipe_obj: dict) -> list[str]:
             tags.extend([_clean_text(x) for x in v.split(",") if _clean_text(x)])
         elif isinstance(v, list):
             tags.extend([_clean_text(x) for x in v if _clean_text(x)])
-    # Deduplicate preserving order
     seen = set()
     out = []
     for t in tags:
@@ -164,20 +175,45 @@ def _extract_tags(recipe_obj: dict) -> list[str]:
     return out[:6]
 
 
-async def scrape_recipe_url(url: str) -> dict[str, Any]:
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError("Please enter a valid http:// or https:// recipe URL.")
+def _build_recipe_from_ld(recipe_ld: dict, base_url: str, fallback_image: str = "") -> Optional[dict[str, Any]]:
+    title = _clean_text(recipe_ld.get("name") or "")
+    desc = _clean_text(recipe_ld.get("description") or "")
+    servings = _parse_servings(recipe_ld.get("recipeYield"))
+    prep_mins = _parse_iso_duration_minutes(recipe_ld.get("prepTime"))
+    cook_mins = _parse_iso_duration_minutes(recipe_ld.get("cookTime"))
+    raw_ings = recipe_ld.get("recipeIngredient") or []
+    if isinstance(raw_ings, str):
+        raw_ings = [x.strip() for x in raw_ings.splitlines() if x.strip()]
+    ingredients = [parse_ingredient_line(_clean_text(x)) for x in raw_ings if _clean_text(x)]
+    steps = _extract_instructions(recipe_ld.get("recipeInstructions"))
+    image_url = _extract_image(recipe_ld.get("image"))
+    if image_url and base_url:
+        image_url = urljoin(base_url, image_url)
+    elif not image_url:
+        image_url = fallback_image
+    tags = _extract_tags(recipe_ld)
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0, headers=HEADERS) as client:
-        resp = await client.get(url.strip())
-        resp.raise_for_status()
-        html_text = resp.text
+    if title and (ingredients or steps):
+        return {
+            "title": title,
+            "description": desc,
+            "servings": servings,
+            "prep_minutes": prep_mins,
+            "cook_minutes": cook_mins,
+            "source_url": base_url,
+            "image_url": image_url,
+            "tags": tags,
+            "ingredients": ingredients,
+            "steps": steps,
+        }
+    return None
 
-    soup = BeautifulSoup(html_text, "lxml")
 
-    # 1. Try JSON-LD first
-    recipe_ld = None
+def parse_recipe_html_or_text(raw_content: str, source_url: str = "") -> dict[str, Any]:
+    soup = BeautifulSoup(raw_content, "lxml")
+    fallback_img = _extract_fallback_image(soup, source_url)
+
+    # 1. Try JSON-LD scripts
     for script in soup.find_all("script", type=re.compile(r"application/ld\+json", re.I)):
         raw_json = script.string or script.get_text()
         if not raw_json or not raw_json.strip():
@@ -186,57 +222,31 @@ async def scrape_recipe_url(url: str) -> dict[str, Any]:
             data = json.loads(raw_json)
             recipe_ld = _find_recipe_json_ld(data)
             if recipe_ld:
-                break
+                built = _build_recipe_from_ld(recipe_ld, source_url, fallback_img)
+                if built:
+                    return built
         except json.JSONDecodeError:
             continue
 
-    if recipe_ld:
-        title = _clean_text(recipe_ld.get("name") or "")
-        desc = _clean_text(recipe_ld.get("description") or "")
-        servings = _parse_servings(recipe_ld.get("recipeYield"))
-        prep_mins = _parse_iso_duration_minutes(recipe_ld.get("prepTime"))
-        cook_mins = _parse_iso_duration_minutes(recipe_ld.get("cookTime"))
-        raw_ings = recipe_ld.get("recipeIngredient") or []
-        if isinstance(raw_ings, str):
-            raw_ings = [x.strip() for x in raw_ings.splitlines() if x.strip()]
-        ingredients = [parse_ingredient_line(_clean_text(x)) for x in raw_ings if _clean_text(x)]
-        steps = _extract_instructions(recipe_ld.get("recipeInstructions"))
-        image_url = _extract_image(recipe_ld.get("image"))
-        if image_url:
-            image_url = urljoin(str(resp.url), image_url)
-        else:
-            image_url = _extract_fallback_image(soup, str(resp.url))
-        tags = _extract_tags(recipe_ld)
-
-        if title and (ingredients or steps):
-            return {
-                "title": title,
-                "description": desc,
-                "servings": servings,
-                "prep_minutes": prep_mins,
-                "cook_minutes": cook_mins,
-                "source_url": str(resp.url),
-                "image_url": image_url,
-                "tags": tags,
-                "ingredients": ingredients,
-                "steps": steps,
-            }
-
-    # 2. Fallback: Microdata / common WordPress recipe plugin selectors
-    title_el = soup.select_one("h1.entry-title, h1.wprm-recipe-name, h1[itemprop='name'], h1")
-    title = _clean_text(title_el.get_text()) if title_el else "Imported Recipe"
+    # 2. Try Microdata / WordPress recipe plugin HTML selectors (WPRM, Tasty, Mediavine Create, etc.)
+    title_el = soup.select_one(
+        ".wprm-recipe-name, .tasty-recipes-title, .mv-create-title, h1.entry-title, h1[itemprop='name'], h1"
+    )
+    title = _clean_text(title_el.get_text()) if title_el else ""
 
     ing_els = soup.select(
-        "[itemprop='recipeIngredient'], .wprm-recipe-ingredient, .tasty-recipes-ingredients li, .recipe-ingredients li"
+        "[itemprop='recipeIngredient'], .wprm-recipe-ingredient, .tasty-recipes-ingredients li, .mv-create-ingredients li, .recipe-ingredients li"
     )
     ingredients = []
     for el in ing_els:
         txt = _clean_text(el.get_text(" "))
+        # Strip leading checkbox symbols like "▢" used by WP Recipe Maker (e.g. Budget Bytes)
+        txt = re.sub(r"^[▢☐☑✓✔•*-]\s*", "", txt).strip()
         if txt:
             ingredients.append(parse_ingredient_line(txt))
 
     step_els = soup.select(
-        "[itemprop='recipeInstructions'] li, .wprm-recipe-instruction-text, .tasty-recipes-instructions li, .recipe-directions li"
+        "[itemprop='recipeInstructions'] li, .wprm-recipe-instruction-text, .tasty-recipes-instructions li, .mv-create-instructions li, .recipe-directions li"
     )
     steps = []
     for el in step_els:
@@ -244,21 +254,153 @@ async def scrape_recipe_url(url: str) -> dict[str, Any]:
         if txt:
             steps.append(txt)
 
-    if not ingredients and not steps:
-        raise ValueError(
-            "Could not automatically detect recipe data on this page. "
-            "Some sites block scraping; you can copy & paste the ingredients and steps directly."
-        )
+    if ingredients or steps:
+        return {
+            "title": title or "Imported Recipe",
+            "description": "",
+            "servings": 4.0,
+            "prep_minutes": None,
+            "cook_minutes": None,
+            "source_url": source_url,
+            "image_url": fallback_img,
+            "tags": [],
+            "ingredients": ingredients,
+            "steps": steps,
+        }
 
-    return {
-        "title": title,
-        "description": "",
-        "servings": 4.0,
-        "prep_minutes": None,
-        "cook_minutes": None,
-        "source_url": str(resp.url),
-        "image_url": _extract_fallback_image(soup, str(resp.url)),
-        "tags": [],
-        "ingredients": ingredients,
-        "steps": steps,
-    }
+    # 3. Plain-text fallback (if user pasted copied recipe text from page)
+    lines = [re.sub(r"^[▢☐☑✓✔•*-]\s*", "", l.strip()) for l in raw_content.splitlines() if l.strip()]
+    if len(lines) >= 3:
+        inferred_title = lines[0]
+        mode = "ingredients"
+        txt_ings = []
+        txt_steps = []
+        for line in lines[1:]:
+            low = line.lower().rstrip(":")
+            if low in ("ingredients", "ingredient list"):
+                mode = "ingredients"
+                continue
+            if low in ("instructions", "steps", "directions", "method", "how to make"):
+                mode = "steps"
+                continue
+            cleaned = re.sub(r"^\d+[\.)]\s*", "", line)
+            if mode == "ingredients":
+                txt_ings.append(parse_ingredient_line(cleaned))
+            else:
+                txt_steps.append(cleaned)
+        if txt_ings or txt_steps:
+            return {
+                "title": inferred_title[:160],
+                "description": "",
+                "servings": 4.0,
+                "prep_minutes": None,
+                "cook_minutes": None,
+                "source_url": source_url,
+                "image_url": "",
+                "tags": [],
+                "ingredients": txt_ings,
+                "steps": txt_steps,
+            }
+
+    raise ValueError(
+        "Could not detect recipe ingredients or steps. "
+        "You can copy & paste the recipe text or page HTML directly."
+    )
+
+
+async def _try_wordpress_rest_api(client: httpx.AsyncClient, parsed_url, original_url: str) -> Optional[dict[str, Any]]:
+    """
+    Many food blogs (including Budget Bytes) run WordPress with WP Recipe Maker / Yoast.
+    When direct HTML requests get 403, query the public WordPress REST API by post slug.
+    """
+    path_parts = [p for p in parsed_url.path.split("/") if p]
+    if not path_parts:
+        return None
+    slug = path_parts[-1]
+    base_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    api_url = f"{base_origin}/wp-json/wp/v2/posts?slug={slug}"
+
+    try:
+        resp = await client.get(
+            api_url,
+            headers={
+                **HEADERS,
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": base_origin + "/",
+            },
+        )
+        if resp.status_code != 200:
+            return None
+        posts = resp.json()
+        if not isinstance(posts, list) or not posts:
+            return None
+        post = posts[0]
+
+        # 1. Check Yoast SEO schema in yoast_head_json
+        yoast_json = post.get("yoast_head_json") or {}
+        og_images = yoast_json.get("og_image") or []
+        og_img_url = og_images[0].get("url", "") if (isinstance(og_images, list) and og_images and isinstance(og_images[0], dict)) else ""
+        schema_data = yoast_json.get("schema")
+        if schema_data:
+            recipe_ld = _find_recipe_json_ld(schema_data)
+            if recipe_ld:
+                built = _build_recipe_from_ld(recipe_ld, original_url, og_img_url)
+                if built:
+                    return built
+
+        # 2. Parse rendered HTML content + yoast_head
+        rendered_html = (post.get("yoast_head") or "") + "\n" + (post.get("content", {}).get("rendered") or "")
+        title_rendered = _clean_text(post.get("title", {}).get("rendered") or "")
+        if rendered_html.strip():
+            parsed = parse_recipe_html_or_text(rendered_html, original_url)
+            if title_rendered and parsed.get("title") in ("", "Imported Recipe"):
+                parsed["title"] = title_rendered
+            if og_img_url and not parsed.get("image_url"):
+                parsed["image_url"] = og_img_url
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
+async def scrape_recipe_url(url: str) -> dict[str, Any]:
+    clean_url = url.strip()
+    parsed = urlparse(clean_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("Please enter a valid http:// or https:// recipe URL.")
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=16.0, headers=HEADERS) as client:
+        html_text = ""
+        final_url = clean_url
+        direct_status = None
+
+        try:
+            resp = await client.get(clean_url)
+            direct_status = resp.status_code
+            final_url = str(resp.url)
+            if resp.status_code == 200:
+                html_text = resp.text
+        except Exception:
+            direct_status = None
+
+        if html_text:
+            try:
+                return parse_recipe_html_or_text(html_text, final_url)
+            except ValueError:
+                pass
+
+        # Fallback: Try official WordPress REST API (/wp-json/wp/v2/posts?slug=...)
+        wp_result = await _try_wordpress_rest_api(client, parsed, clean_url)
+        if wp_result:
+            return wp_result
+
+        if direct_status in (403, 429):
+            raise PermissionError(
+                f"This website ({parsed.netloc}) blocked automated server connections (HTTP {direct_status}). "
+                "Use the Quick Paste box below to paste the copied recipe text or page source!"
+            )
+
+        raise ValueError(
+            "Could not automatically fetch recipe data from this URL. "
+            "Use the Quick Paste box to paste the recipe text or page HTML."
+        )
