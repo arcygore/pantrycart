@@ -748,19 +748,14 @@ def _run_migrations(conn: sqlite3.Connection):
             )
 
     dirty_list_items = conn.execute(
-        "SELECT id, name, prep_notes FROM shopping_list_items WHERE name LIKE '%(%' OR name LIKE '% - %'"
+        "SELECT id, name FROM shopping_list_items WHERE name LIKE '%(%' OR name LIKE '% - %'"
     ).fetchall()
     for li in dirty_list_items:
-        cleaned_name, extra_prep = clean_shopping_item_name(li["name"] or "")
+        cleaned_name, _ = clean_shopping_item_name(li["name"] or "")
         if cleaned_name and cleaned_name != (li["name"] or ""):
-            existing_prep = (li["prep_notes"] or "").strip()
-            if extra_prep and extra_prep.lower() not in existing_prep.lower():
-                merged_prep = f"{existing_prep}, {extra_prep}" if existing_prep else extra_prep
-            else:
-                merged_prep = existing_prep
             conn.execute(
-                "UPDATE shopping_list_items SET name = ?, item_key = ?, prep_notes = ? WHERE id = ?",
-                (cleaned_name, normalize_item_key(cleaned_name), merged_prep, li["id"]),
+                "UPDATE shopping_list_items SET name = ?, item_key = ? WHERE id = ?",
+                (cleaned_name, normalize_item_key(cleaned_name), li["id"]),
             )
 
 
