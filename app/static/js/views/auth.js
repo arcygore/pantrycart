@@ -5,24 +5,27 @@ export function renderAuthView(container, needsSetup, onSuccess) {
   container.innerHTML = `
     <div class="auth-shell">
       <div class="auth-card">
-        <div class="auth-brand">
-          <img src="/static/icon.svg" alt="PantryCart" />
-          <div>
-            <h1>PantryCart</h1>
-            <p>${needsSetup ? "Create your household admin account" : "Sign in to your household lists"}</p>
+        <div class="auth-brand" style="justify-content: space-between;">
+          <div class="row" style="gap: 12px; align-items: center;">
+            <img src="/static/icon.svg" alt="PantryCart" />
+            <div>
+              <h1>PantryCart</h1>
+              <p>${needsSetup ? "Create your household admin account" : "Sign in to your household lists"}</p>
+            </div>
           </div>
+          <button type="button" class="btn btn-sm theme-toggle-btn" id="auth-theme-toggle" style="min-height: 30px; padding: 4px 10px; font-size: 0.78rem;">🌙 Dark</button>
         </div>
 
         <form id="auth-form" class="stack-md">
           ${needsSetup ? `
             <div>
               <label class="field-label" for="auth-display">Your Name</label>
-              <input class="input" id="auth-display" name="display_name" placeholder="e.g. Ryan" required />
+              <input class="input" id="auth-display" name="display_name" placeholder="e.g. Alex" required />
             </div>
           ` : ""}
           <div>
             <label class="field-label" for="auth-user">Username</label>
-            <input class="input" id="auth-user" name="username" autocomplete="username" placeholder="e.g. ryan" required />
+            <input class="input" id="auth-user" name="username" autocomplete="username" placeholder="e.g. alex" required />
           </div>
           <div>
             <label class="field-label" for="auth-pass">Password</label>
@@ -40,6 +43,22 @@ export function renderAuthView(container, needsSetup, onSuccess) {
       </div>
     </div>
   `;
+
+  const authThemeBtn = document.getElementById("auth-theme-toggle");
+  if (authThemeBtn) {
+    const syncAuthThemeBtn = () => {
+      const isDark = document.documentElement.dataset.theme === "dark";
+      authThemeBtn.textContent = isDark ? "☀️ Light" : "🌙 Dark";
+      authThemeBtn.title = isDark ? "Switch to Light Mode" : "Switch to Dark Mode";
+    };
+    syncAuthThemeBtn();
+    authThemeBtn.addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      if (window.__pantrySetTheme) window.__pantrySetTheme(next);
+      else document.documentElement.dataset.theme = next;
+      syncAuthThemeBtn();
+    });
+  }
 
   const form = document.getElementById("auth-form");
   form.addEventListener("submit", async (e) => {

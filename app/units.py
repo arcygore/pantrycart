@@ -274,6 +274,50 @@ def _eval_mixed_number(expr: str) -> Optional[float]:
     return total
 
 
+def clean_shopping_item_name(raw_name: str) -> tuple[str, str]:
+    """Strip cut/prep notes (parentheticals or ' - prep') from an ingredient/item name.
+
+    Returns ``(clean_name, extracted_prep_notes)`` so recipe prep instructions
+    remain on the recipe while shopping lists and Kroger product searches use
+    the clean canonical product name.
+    """
+    text = (raw_name or "").strip()
+    if not text:
+        return "", ""
+
+    prep_parts: list[str] = []
+
+    def _collect_paren(match: re.Match) -> str:
+        inner = match.group(1).strip(" ,;-")
+        if inner:
+            prep_parts.append(inner)
+        return " "
+
+    cleaned = re.sub(r"\(([^)]*)\)", _collect_paren, text)
+
+    # Also separate trailing ' - trimmed and halved' style prep suffixes
+    dash_match = re.match(r"^(.*?)\s+[-–—]\s+(.+)$", cleaned)
+    if dash_match and dash_match.group(1).strip():
+        cleaned = dash_match.group(1)
+        trailing = dash_match.group(2).strip(" ,;-")
+        if trailing:
+            prep_parts.append(trailing)
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;-")
+    if not cleaned:
+        return text, ""
+    return cleaned, ", ".join(prep_parts)
+
+
+def _merge_prep_notes(*parts: str) -> str:
+    seen: list[str] = []
+    for part in parts:
+        cleaned = (part or "").strip(" ,;-")
+        if cleaned and cleaned.lower() not in {s.lower() for s in seen}:
+            seen.append(cleaned)
+    return ", ".join(seen)
+
+
 def parse_ingredient_line(raw: str) -> dict[str, Any]:
     original = raw.strip()
     if not original:
@@ -299,13 +343,13 @@ def parse_ingredient_line(raw: str) -> dict[str, Any]:
         inner_qty = float(pack_match.group(1))
         inner_unit = UNIT_ALIASES.get(pack_match.group(2).lower().strip("."), pack_match.group(2).lower())
         mult = qty if qty is not None else 1.0
-        name = pack_match.group(3).strip()
+        clean_name, extra_prep = clean_shopping_item_name(pack_match.group(3).strip())
         return {
             "raw_text": original,
             "quantity": round(mult * inner_qty, 3),
             "unit": inner_unit,
-            "name": name,
-            "prep_notes": prep_notes,
+            "name": clean_name,
+            "prep_notes": _merge_prep_notes(prep_notes, extra_prep),
         }
 
     # Try matching unit at start of rest
@@ -331,12 +375,13 @@ def parse_ingredient_line(raw: str) -> dict[str, Any]:
     # Clean trailing "or to taste" / "(optional)"
     rest_clean = re.sub(r"\s*\((?:optional|divided|to taste)\)\s*", " ", rest_clean, flags=re.IGNORECASE).strip()
 
+    clean_name, extra_prep = clean_shopping_item_name(rest_clean or working)
     return {
         "raw_text": original,
         "quantity": qty,
         "unit": unit,
-        "name": rest_clean or working,
-        "prep_notes": prep_notes,
+        "name": clean_name,
+        "prep_notes": _merge_prep_notes(prep_notes, extra_prep),
     }
 
 
@@ -484,9 +529,11 @@ def compute_grocery_packages(
     buckets: dict[str, dict[str, Any]] = {}
 
     for entry in aggregated_entries:
+        cleaned_entry_name, _ = clean_shopping_item_name(entry["name"])
+        effective_name = cleaned_entry_name or entry["name"]
         cat = cat_by_id.get(entry.get("catalog_id")) if entry.get("catalog_id") else None
         if not cat:
-            cat = match_catalog_item(entry["name"], catalog_rows)
+            cat = match_catalog_item(effective_name, catalog_rows)
 
         if cat:
             key = cat["canonical_name"]
@@ -494,8 +541,8 @@ def compute_grocery_packages(
             dept = cat["default_department"]
             is_staple = bool(cat["is_pantry_staple"]) or (key in pantry_set)
         else:
-            key = _strip_fillers(entry["name"]) or normalize_item_key(entry["name"])
-            display = entry["name"].strip().title()
+            key = _strip_fillers(effective_name) or normalize_item_key(effective_name)
+            display = effective_name.strip().title()
             dept = "Other"
             is_staple = key in pantry_set
 

@@ -13,9 +13,9 @@ export function renderMacroStrip(m, compact = false) {
   }
   const cal = m.calories ?? m.calories_per_serving;
   if (cal === null || cal === undefined) return "";
-  const p = m.protein_g ?? 0;
-  const c = m.carbs_g ?? 0;
-  const f = m.fat_g ?? 0;
+  const p = m.protein_g != null ? Math.round(Number(m.protein_g)) : 0;
+  const c = m.carbs_g != null ? Math.round(Number(m.carbs_g)) : 0;
+  const f = m.fat_g != null ? Math.round(Number(m.fat_g)) : 0;
   if (compact) {
     return `
       <span class="macro-strip">
@@ -175,16 +175,16 @@ export function openLoseItQuickCardModal(recipe, state, { onSaved } = {}) {
 
   const renderBody = () => {
     const hasMacros = workingRecipe.calories_per_serving !== null && workingRecipe.calories_per_serving !== undefined;
-    const calPortion = calcPerPortion(workingRecipe.calories_per_serving);
-    const proPortion = calcPerPortion(workingRecipe.protein_g);
-    const carbPortion = calcPerPortion(workingRecipe.carbs_g);
-    const fatPortion = calcPerPortion(workingRecipe.fat_g);
-    const fibPortion = calcPerPortion(workingRecipe.fiber_g);
+    const calPortion = Math.round(calcPerPortion(workingRecipe.calories_per_serving));
+    const proPortion = Math.round(calcPerPortion(workingRecipe.protein_g));
+    const carbPortion = Math.round(calcPerPortion(workingRecipe.carbs_g));
+    const fatPortion = Math.round(calcPerPortion(workingRecipe.fat_g));
+    const fibPortion = Math.round(calcPerPortion(workingRecipe.fiber_g));
 
     const totalCal = hasMacros ? Math.round(Number(workingRecipe.calories_per_serving) * baseServings) : null;
-    const totalPro = hasMacros ? Number(workingRecipe.protein_g || 0) * baseServings : null;
-    const totalCarb = hasMacros ? Number(workingRecipe.carbs_g || 0) * baseServings : null;
-    const totalFat = hasMacros ? Number(workingRecipe.fat_g || 0) * baseServings : null;
+    const totalPro = hasMacros ? Math.round(Number(workingRecipe.protein_g || 0) * baseServings) : null;
+    const totalCarb = hasMacros ? Math.round(Number(workingRecipe.carbs_g || 0) * baseServings) : null;
+    const totalFat = hasMacros ? Math.round(Number(workingRecipe.fat_g || 0) * baseServings) : null;
 
     return `
       <div class="stack-md">
@@ -217,14 +217,14 @@ export function openLoseItQuickCardModal(recipe, state, { onSaved } = {}) {
             </div>
             <div class="nutrition-row" style="font-size: 1.08rem; font-weight: 900;">
               <span>Calories</span>
-              <span>${Math.round(calPortion)} kcal</span>
+              <span>${calPortion} kcal</span>
             </div>
-            <div class="nutrition-row"><span>Protein</span><strong>${fmtQty(proPortion)} g</strong></div>
-            <div class="nutrition-row"><span>Total Carbs</span><strong>${fmtQty(carbPortion)} g</strong></div>
-            <div class="nutrition-row"><span>Total Fat</span><strong>${fmtQty(fatPortion)} g</strong></div>
-            <div class="nutrition-row"><span>Dietary Fiber</span><strong>${fmtQty(fibPortion)} g</strong></div>
+            <div class="nutrition-row"><span>Protein</span><strong>${proPortion} g</strong></div>
+            <div class="nutrition-row"><span>Total Carbs</span><strong>${carbPortion} g</strong></div>
+            <div class="nutrition-row"><span>Total Fat</span><strong>${fatPortion} g</strong></div>
+            <div class="nutrition-row"><span>Dietary Fiber</span><strong>${fibPortion} g</strong></div>
             <div class="small muted" style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border);">
-              <strong>Entire Batch Total:</strong> ${totalCal} kcal · ${fmtQty(totalPro)}g P · ${fmtQty(totalCarb)}g C · ${fmtQty(totalFat)}g F
+              <strong>Entire Batch Total:</strong> ${totalCal} kcal · ${totalPro}g P · ${totalCarb}g C · ${totalFat}g F
             </div>
           </div>
 
@@ -251,10 +251,10 @@ export function openLoseItQuickCardModal(recipe, state, { onSaved } = {}) {
           const cardEl = document.querySelector(".nutrition-card");
           if (cardEl && workingRecipe.calories_per_serving !== null) {
             const cal = Math.round(calcPerPortion(workingRecipe.calories_per_serving));
-            const pro = fmtQty(calcPerPortion(workingRecipe.protein_g));
-            const carb = fmtQty(calcPerPortion(workingRecipe.carbs_g));
-            const fat = fmtQty(calcPerPortion(workingRecipe.fat_g));
-            const fib = fmtQty(calcPerPortion(workingRecipe.fiber_g));
+            const pro = Math.round(calcPerPortion(workingRecipe.protein_g));
+            const carb = Math.round(calcPerPortion(workingRecipe.carbs_g));
+            const fat = Math.round(calcPerPortion(workingRecipe.fat_g));
+            const fib = Math.round(calcPerPortion(workingRecipe.fiber_g));
             cardEl.querySelector(".nutrition-card-title .small").textContent = `${workingRecipe.title} · 1 of ${fmtQty(portions)} portions`;
             const rows = cardEl.querySelectorAll(".nutrition-row span:last-child, .nutrition-row strong");
             if (rows.length >= 5) {
@@ -291,10 +291,10 @@ export function openLoseItQuickCardModal(recipe, state, { onSaved } = {}) {
         const txt = [
           `${workingRecipe.title} (1/${fmtQty(portions)} recipe)`,
           `Calories: ${Math.round(calcPerPortion(workingRecipe.calories_per_serving))} kcal`,
-          `Protein: ${fmtQty(calcPerPortion(workingRecipe.protein_g))}g`,
-          `Carbs: ${fmtQty(calcPerPortion(workingRecipe.carbs_g))}g`,
-          `Fat: ${fmtQty(calcPerPortion(workingRecipe.fat_g))}g`,
-          `Fiber: ${fmtQty(calcPerPortion(workingRecipe.fiber_g))}g`,
+          `Protein: ${Math.round(calcPerPortion(workingRecipe.protein_g))}g`,
+          `Carbs: ${Math.round(calcPerPortion(workingRecipe.carbs_g))}g`,
+          `Fat: ${Math.round(calcPerPortion(workingRecipe.fat_g))}g`,
+          `Fiber: ${Math.round(calcPerPortion(workingRecipe.fiber_g))}g`,
         ].join("\n");
         try {
           await navigator.clipboard.writeText(txt);
@@ -318,10 +318,10 @@ export function openLoseItQuickCardModal(recipe, state, { onSaved } = {}) {
           day: "Today",
           meals: workingRecipe.title,
           calories: Math.round(calcPerPortion(workingRecipe.calories_per_serving)),
-          protein_g: Number(calcPerPortion(workingRecipe.protein_g).toFixed(1)),
-          carbs_g: Number(calcPerPortion(workingRecipe.carbs_g).toFixed(1)),
-          fat_g: Number(calcPerPortion(workingRecipe.fat_g).toFixed(1)),
-          fiber_g: Number(calcPerPortion(workingRecipe.fiber_g).toFixed(1)),
+          protein_g: Math.round(calcPerPortion(workingRecipe.protein_g)),
+          carbs_g: Math.round(calcPerPortion(workingRecipe.carbs_g)),
+          fat_g: Math.round(calcPerPortion(workingRecipe.fat_g)),
+          fiber_g: Math.round(calcPerPortion(workingRecipe.fiber_g)),
         });
       });
     };

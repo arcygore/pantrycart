@@ -3,7 +3,13 @@ import { openLoseItQuickCardModal, renderMacroStrip } from "../nutrition_ui.js";
 import { esc, fmtQty, openModal, toast } from "../utils.js";
 
 export async function renderRecipesView(container, state) {
-  let recipes = await api("/api/recipes");
+  let [recipes, qData] = await Promise.all([
+    api("/api/recipes"),
+    api("/api/recipes/quick-queries").catch(() => ({ queries: [] })),
+  ]);
+  let quickQueries = Array.isArray(qData?.queries) && qData.queries.length
+    ? qData.queries
+    : ["Dinner", "Lunch", "Breakfast", "Dessert", "Quick", "High Protein", "Chicken", "Beef", "Vegetarian"];
   let search = "";
   let selectedRecipe = null;
   let cookScale = 1;
@@ -35,12 +41,20 @@ export async function renderRecipesView(container, state) {
     const filtered = recipes.filter((r) => {
       if (!search.trim()) return true;
       const q = search.trim().toLowerCase();
+      if (q === "quick") {
+        const mins = (r.prep_minutes || 0) + (r.cook_minutes || 0);
+        if (mins > 0 && mins <= 35) return true;
+      }
+      if (q === "high protein" && Number(r.protein_g || 0) >= 25) return true;
       return (
         r.title.toLowerCase().includes(q) ||
         r.tags.some((t) => t.toLowerCase().includes(q)) ||
-        r.ingredients.some((i) => i.name.toLowerCase().includes(q))
+        r.ingredients.some((i) => i.name.toLowerCase().includes(q)) ||
+        (r.description || "").toLowerCase().includes(q)
       );
     });
+
+    const activeQ = search.trim().toLowerCase();
 
     container.innerHTML = `
       <div class="page-header">
@@ -65,6 +79,13 @@ export async function renderRecipesView(container, state) {
           </form>
         `}
         <input class="input" id="recipe-search" value="${esc(search)}" placeholder="Search recipes by title, tag, or ingredient..." />
+        <div class="quick-query-bar">
+          ${quickQueries.map((qq) => `
+            <button type="button" class="quick-query-chip ${activeQ === qq.toLowerCase() ? "active" : ""}" data-query="${esc(qq)}">${esc(qq)}</button>
+          `).join("")}
+          ${activeQ ? `<button type="button" class="btn btn-sm" id="clear-recipe-filter-btn">Clear</button>` : ""}
+          ${isGuest ? "" : `<button type="button" class="btn btn-sm" id="edit-quick-queries-btn" title="Customize built-in recipe quick filter chips">✎ Edit Filters</button>`}
+        </div>
       </div>
 
       ${filtered.length === 0 ? `
@@ -101,6 +122,52 @@ export async function renderRecipesView(container, state) {
       const el = document.getElementById("recipe-search");
       el?.focus();
       el?.setSelectionRange(search.length, search.length);
+    });
+
+    document.querySelectorAll(".quick-query-chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const q = chip.dataset.query || "";
+        search = search.trim().toLowerCase() === q.toLowerCase() ? "" : q;
+        render();
+      });
+    });
+
+    document.getElementById("clear-recipe-filter-btn")?.addEventListener("click", () => {
+      search = "";
+      render();
+    });
+
+    document.getElementById("edit-quick-queries-btn")?.addEventListener("click", () => {
+      openModal("Edit Recipe Filter Chips", `
+        <form id="quick-queries-form" class="stack-md">
+          <p class="small muted" style="margin: 0;">
+            Enter comma-separated or one-per-line quick filter buttons shown under the Recipes search bar (matches tags, title, ingredients, "Quick" ≤ 35 min, or "High Protein" ≥ 25g).
+          </p>
+          <textarea class="input" name="queries_text" rows="5" required>${esc(quickQueries.join("\n"))}</textarea>
+          <div class="row" style="justify-content: flex-end; gap: 8px;">
+            <button class="btn" type="button" id="reset-default-qq-btn">Reset Defaults</button>
+            <button class="btn btn-primary" type="submit">Save Filters</button>
+          </div>
+        </form>
+      `, (close) => {
+        const defaults = ["Dinner", "Lunch", "Breakfast", "Dessert", "Quick", "High Protein", "Chicken", "Beef", "Vegetarian"];
+        document.getElementById("reset-default-qq-btn")?.addEventListener("click", () => {
+          document.querySelector("#quick-queries-form textarea[name='queries_text']").value = defaults.join("\n");
+        });
+        document.getElementById("quick-queries-form")?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const raw = e.target.queries_text.value || "";
+          const list = raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+          const res = await api("/api/recipes/quick-queries", {
+            method: "PUT",
+            body: { queries: list },
+          });
+          quickQueries = res.queries || list;
+          close();
+          render();
+          toast("Recipe filter chips updated!");
+        });
+      });
     });
 
     document.getElementById("new-recipe-btn")?.addEventListener("click", () => openRecipeEditor(null, false));
@@ -615,23 +682,23 @@ export async function renderRecipesView(container, state) {
           <div class="row-wrap" style="gap: 8px;">
             <div style="width: 95px;">
               <label class="small muted">Calories</label>
-              <input class="input" name="calories_per_serving" type="number" step="1" min="0" value="${esc(recipe?.calories_per_serving ?? "")}" />
+              <input class="input" name="calories_per_serving" type="number" step="1" min="0" value="${recipe?.calories_per_serving != null ? Math.round(recipe.calories_per_serving) : ""}" />
             </div>
             <div style="width: 85px;">
               <label class="small muted">Protein (g)</label>
-              <input class="input" name="protein_g" type="number" step="0.1" min="0" value="${esc(recipe?.protein_g ?? "")}" />
+              <input class="input" name="protein_g" type="number" step="1" min="0" value="${recipe?.protein_g != null ? Math.round(recipe.protein_g) : ""}" />
             </div>
             <div style="width: 85px;">
               <label class="small muted">Carbs (g)</label>
-              <input class="input" name="carbs_g" type="number" step="0.1" min="0" value="${esc(recipe?.carbs_g ?? "")}" />
+              <input class="input" name="carbs_g" type="number" step="1" min="0" value="${recipe?.carbs_g != null ? Math.round(recipe.carbs_g) : ""}" />
             </div>
             <div style="width: 85px;">
               <label class="small muted">Fat (g)</label>
-              <input class="input" name="fat_g" type="number" step="0.1" min="0" value="${esc(recipe?.fat_g ?? "")}" />
+              <input class="input" name="fat_g" type="number" step="1" min="0" value="${recipe?.fat_g != null ? Math.round(recipe.fat_g) : ""}" />
             </div>
             <div style="width: 85px;">
               <label class="small muted">Fiber (g)</label>
-              <input class="input" name="fiber_g" type="number" step="0.1" min="0" value="${esc(recipe?.fiber_g ?? "")}" />
+              <input class="input" name="fiber_g" type="number" step="1" min="0" value="${recipe?.fiber_g != null ? Math.round(recipe.fiber_g) : ""}" />
             </div>
             <div style="width: 115px;">
               <label class="small muted">Custom Portions</label>
@@ -670,11 +737,11 @@ export async function renderRecipesView(container, state) {
               servings: Number(f.servings.value) || 4,
             },
           });
-          f.calories_per_serving.value = est.calories_per_serving ?? "";
-          f.protein_g.value = est.protein_g ?? "";
-          f.carbs_g.value = est.carbs_g ?? "";
-          f.fat_g.value = est.fat_g ?? "";
-          f.fiber_g.value = est.fiber_g ?? "";
+          f.calories_per_serving.value = est.calories_per_serving != null ? Math.round(est.calories_per_serving) : "";
+          f.protein_g.value = est.protein_g != null ? Math.round(est.protein_g) : "";
+          f.carbs_g.value = est.carbs_g != null ? Math.round(est.carbs_g) : "";
+          f.fat_g.value = est.fat_g != null ? Math.round(est.fat_g) : "";
+          f.fiber_g.value = est.fiber_g != null ? Math.round(est.fiber_g) : "";
           const statusEl = document.getElementById("macro-auto-status");
           if (statusEl) statusEl.textContent = "✓ Updated from ingredients";
           if (showToastMsg) toast("Estimated per-serving macros from ingredients!");

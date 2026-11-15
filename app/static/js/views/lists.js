@@ -90,7 +90,12 @@ export async function renderListsView(container, state, navigate) {
               </select>
               <span class="badge">${esc(activeList.list_type === "weekly" ? "Weekly Trip" : activeList.list_type === "store" ? "Dedicated Store" : "One-off")}</span>
               ${activeList.store?.has_custom_path ? `<span class="badge badge-info" title="Using your custom walking path">Your Path</span>` : ""}
-              ${krogerStatus?.location_name ? `<span class="badge badge-info" title="Linked Kroger Store">🏪 ${esc(krogerStatus.location_name)}</span>` : ""}
+              ${(() => {
+                const storeKrogerName = activeList.store?.kroger_location_id
+                  ? (activeList.store.kroger_location_name || ("Kroger #" + activeList.store.kroger_location_id))
+                  : ((!activeList.store || activeList.store.store_type === "grocery") ? (krogerStatus?.location_name || "") : "");
+                return storeKrogerName ? `<span class="badge badge-info" title="Linked Kroger Store for Aisle Mapping &amp; Cart">🏪 ${esc(storeKrogerName)}</span>` : "";
+              })()}
             </div>
             ${isGuest ? "" : `
               <div class="row" style="gap: 6px; flex-wrap: wrap;">
@@ -103,9 +108,11 @@ export async function renderListsView(container, state, navigate) {
           </div>
 
           <form id="quick-add-form" class="quick-add-wrap">
-            <div class="row">
-              <input class="input grow" id="quick-add-input" autocomplete="off"
+            <div class="row-wrap" style="gap: 8px;">
+              <input class="input grow" id="quick-add-input" autocomplete="off" style="min-width: 210px;"
                 placeholder="Quick add (e.g. 'bananas', '2 cans black beans', 'M6 bolts')..." />
+              <input class="input" id="quick-add-notes" autocomplete="off" style="flex: 0 1 250px; min-width: 170px;"
+                placeholder="Notes / substitutions (optional)..." />
               <button class="btn btn-primary" type="submit">Add</button>
             </div>
             <div id="suggestions-box" class="suggestions-menu" style="display:none;"></div>
@@ -184,20 +191,17 @@ export async function renderListsView(container, state, navigate) {
         </button>
         <div class="item-main ${canModify ? "editable" : ""}" ${canModify ? `data-action="edit-item" title="Click to edit item"` : ""}>
           <div class="item-title-line">
-            ${canModify ? `
-              <span class="qty-stepper" title="Adjust quantity">
-                <button class="qty-step-btn" data-action="qty-dec" type="button" aria-label="Decrease quantity">−</button>
-                <span class="qty-badge ${isMulti ? "multi" : ""}">${fmtQty(qtyNum)}×</span>
-                <button class="qty-step-btn" data-action="qty-inc" type="button" aria-label="Increase quantity">+</button>
-              </span>
-            ` : `<span class="qty-badge ${isMulti ? "multi" : ""}" title="Quantity">${fmtQty(qtyNum)}×</span>`}
+            <span class="qty-badge ${isMulti ? "multi" : ""}" title="${canModify ? "Quantity (click item to edit)" : "Quantity"}">${fmtQty(qtyNum)}×</span>
             <span class="item-name">${esc(item.name)}</span>
             ${item.buy_unit ? `<span class="unit-pill">${esc(item.buy_unit)}</span>` : ""}
           </div>
-          ${(item.needed_summary || recipeText || item.notes) ? `
+          ${(item.needed_summary || recipeText) ? `
             <div class="item-meta">
-              ${[item.needed_summary, recipeText, item.notes].filter(Boolean).map(esc).join(" · ")}
+              ${[item.needed_summary, recipeText].filter(Boolean).map(esc).join(" · ")}
             </div>
+          ` : ""}
+          ${item.notes ? `
+            <div class="item-note-callout" title="Item note / acceptable substitutions">📝 ${esc(item.notes)}</div>
           ` : ""}
         </div>
         <div class="item-action-btns">
@@ -230,9 +234,10 @@ export async function renderListsView(container, state, navigate) {
         </p>
 
         <form id="add-tpl-form" class="row-wrap">
-          <input class="input grow" name="name" placeholder="Add weekly staple (e.g. Greek Yogurt, Berries)..." required />
+          <input class="input grow" name="name" placeholder="Add weekly staple (e.g. Greek Yogurt, Berries)..." required style="min-width: 170px;" />
           <input class="input" name="buy_qty" type="number" step="0.25" min="0.25" value="1" style="width: 70px;" />
-          <input class="input" name="buy_unit" placeholder="Unit/Pack" style="width: 120px;" />
+          <input class="input" name="buy_unit" placeholder="Unit/Pack" style="width: 110px;" />
+          <input class="input" name="notes" placeholder="Notes / acceptable substitutions..." style="flex: 1 1 180px;" />
           <button class="btn btn-primary btn-sm" type="submit">+ Add</button>
         </form>
 
@@ -247,6 +252,7 @@ export async function renderListsView(container, state, navigate) {
                     <input class="input" name="buy_qty" type="number" step="0.25" min="0.25" value="${esc(t.buy_qty)}" style="width: 78px;" required />
                     <input class="input" name="buy_unit" value="${esc(t.buy_unit)}" placeholder="Unit (e.g. bunch, 1 lb pack)" style="width: 145px;" />
                   </div>
+                  <input class="input" name="notes" value="${esc(t.notes || "")}" placeholder="Notes / acceptable substitutions (e.g. Organic only, 2% OK if out of whole)" />
                   <div class="row-wrap" style="justify-content: space-between;">
                     <select class="select" name="department" style="width: auto; min-width: 170px; min-height: 34px;">
                       ${itemDepts.map((d) => `<option value="${esc(d)}" ${d === t.department ? "selected" : ""}>${esc(d)}</option>`).join("")}
@@ -271,6 +277,7 @@ export async function renderListsView(container, state, navigate) {
                       ${t.buy_unit ? `<span class="unit-pill">${esc(t.buy_unit)}</span>` : ""}
                     </div>
                     <div class="small muted">${esc(t.department)}</div>
+                    ${t.notes ? `<div class="item-note-callout">📝 ${esc(t.notes)}</div>` : ""}
                   </div>
                 </label>
                 <div class="row" style="gap: 5px;">
@@ -301,6 +308,7 @@ export async function renderListsView(container, state, navigate) {
               name: f.name.value.trim(),
               buy_qty: Number(f.buy_qty.value) || 1,
               buy_unit: f.buy_unit.value.trim(),
+              notes: f.notes?.value.trim() || "",
             },
           });
           templateItems = await api("/api/lists/template/items");
@@ -347,6 +355,7 @@ export async function renderListsView(container, state, navigate) {
                 buy_qty: Number(form.buy_qty.value) || 1,
                 buy_unit: form.buy_unit.value.trim(),
                 department: form.department.value,
+                notes: form.notes?.value.trim() || "",
               },
             });
             editingTplId = null;
@@ -479,6 +488,14 @@ export async function renderListsView(container, state, navigate) {
                             <strong>${esc(it.list_item_name)}</strong>
                             <span class="small muted">List need: ${fmtQty(it.quantity)} ${esc(it.buy_unit || "ea")}</span>
                           </div>
+                          <div class="row" style="gap: 6px; flex-wrap: wrap;">
+                            <input class="input grow kroger-search-input" data-item-id="${it.list_item_id}"
+                              value="${esc(it.search_term || it.list_item_name)}"
+                              placeholder="Modify Kroger search keywords..."
+                              style="min-height: 32px; font-size: 0.84rem; min-width: 160px;" />
+                            <button class="btn btn-sm kroger-retry-search-btn" type="button" data-item-id="${it.list_item_id}"
+                              title="Search Kroger products using your updated query">🔍 Search</button>
+                          </div>
                           <div class="row" style="gap: 8px; flex-wrap: wrap;">
                             <select class="select grow kroger-item-select" data-item-id="${it.list_item_id}" ${hasMatches ? "" : "disabled"}>
                               ${hasMatches ? it.candidates.map((c) => {
@@ -486,7 +503,7 @@ export async function renderListsView(container, state, navigate) {
                                 const aisleTxt = c.aisle ? ` [${c.aisle}]` : "";
                                 const label = `${c.brand ? c.brand + " - " : ""}${c.description}${c.size ? " (" + c.size + ")" : ""}${priceTxt}${aisleTxt}`;
                                 return `<option value="${esc(c.upc)}" ${c.upc === it.selected_upc ? "selected" : ""}>${esc(label)}</option>`;
-                              }).join("") : `<option value="">No Kroger catalog match found</option>`}
+                              }).join("") : `<option value="">No Kroger catalog match found — edit search above and click Search</option>`}
                             </select>
                             <input type="number" min="1" step="1" class="input kroger-item-qty"
                               data-item-id="${it.list_item_id}" value="${Math.max(1, Number(it.quantity) || 1)}"
@@ -509,6 +526,88 @@ export async function renderListsView(container, state, navigate) {
             </div>
           </div>
         `;
+
+        const formatKrogerCandidateOption = (c) => {
+          const priceTxt = c.price != null ? ` — $${Number(c.price).toFixed(2)}` : "";
+          const aisleTxt = c.aisle ? ` [${c.aisle}]` : "";
+          const label = `${c.brand ? c.brand + " - " : ""}${c.description}${c.size ? " (" + c.size + ")" : ""}${priceTxt}${aisleTxt}`;
+          return `<option value="${esc(c.upc)}">${esc(label)}</option>`;
+        };
+
+        const refreshKrogerPushBtn = () => {
+          const pushBtnEl = document.getElementById("kroger-push-submit-btn");
+          if (!pushBtnEl) return;
+          const anySelected = Array.from(document.querySelectorAll(".kroger-item-check")).some((c) => c.checked && !c.disabled);
+          pushBtnEl.disabled = !krogerStatus?.user_connected || !anySelected;
+        };
+
+        const runItemSearch = async (itemId) => {
+          const inp = document.querySelector(`.kroger-search-input[data-item-id="${itemId}"]`);
+          const btn = document.querySelector(`.kroger-retry-search-btn[data-item-id="${itemId}"]`);
+          const sel = document.querySelector(`.kroger-item-select[data-item-id="${itemId}"]`);
+          const chk = document.querySelector(`.kroger-item-check[data-item-id="${itemId}"]`);
+          const qtyEl = document.querySelector(`.kroger-item-qty[data-item-id="${itemId}"]`);
+          const term = inp?.value.trim() || "";
+          if (!term) {
+            toast("Enter keywords to search Kroger", true);
+            return;
+          }
+          if (btn) {
+            btn.disabled = true;
+            btn.textContent = "Searching...";
+          }
+          try {
+            const res = await api("/api/kroger/search-product", {
+              method: "POST",
+              body: {
+                term,
+                list_id: activeList.id,
+                location_id: preview.location_id || "",
+                limit: 8,
+              },
+            });
+            const cands = res?.candidates || [];
+            if (sel) {
+              sel.innerHTML = cands.length
+                ? cands.map(formatKrogerCandidateOption).join("")
+                : `<option value="">No matches for "${esc(term)}" — try different keywords</option>`;
+              sel.disabled = cands.length === 0;
+            }
+            if (qtyEl) qtyEl.disabled = cands.length === 0;
+            if (chk) {
+              chk.disabled = cands.length === 0;
+              chk.checked = cands.length > 0;
+            }
+            if (!cands.length) {
+              toast(`No Kroger matches for "${term}"`, true);
+            } else {
+              toast(`Found ${cands.length} Kroger option(s) for "${term}"`);
+            }
+            refreshKrogerPushBtn();
+          } catch (err) {
+            toast(err.message || "Kroger search failed", true);
+          } finally {
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = "🔍 Search";
+            }
+          }
+        };
+
+        document.querySelectorAll(".kroger-retry-search-btn").forEach((btn) => {
+          btn.addEventListener("click", () => runItemSearch(btn.dataset.itemId));
+        });
+        document.querySelectorAll(".kroger-search-input").forEach((inp) => {
+          inp.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              runItemSearch(inp.dataset.itemId);
+            }
+          });
+        });
+        document.querySelectorAll(".kroger-item-check").forEach((chk) => {
+          chk.addEventListener("change", refreshKrogerPushBtn);
+        });
 
         document.getElementById("kroger-cart-cancel-btn")?.addEventListener("click", close);
 
@@ -822,10 +921,11 @@ export async function renderListsView(container, state, navigate) {
       e.preventDefault();
       const val = input.value.trim();
       if (!val) return;
+      const notesVal = document.getElementById("quick-add-notes")?.value.trim() || "";
       sugBox.style.display = "none";
       activeList = await api(`/api/lists/${activeList.id}/items`, {
         method: "POST",
-        body: { name: val },
+        body: { name: val, notes: notesVal },
       });
       lists = await api("/api/lists");
       render();
@@ -880,38 +980,6 @@ export async function renderListsView(container, state, navigate) {
         }
       });
 
-      rowEl.querySelector('[data-action="qty-dec"]')?.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const curQty = Number(item.buy_qty) || 1;
-        if (curQty <= 1) {
-          if (!confirm(`Remove "${item.name}" from the list?`)) return;
-          activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, { method: "DELETE" });
-          lists = await api("/api/lists");
-          render();
-          toast(`Removed ${item.name}`);
-          return;
-        }
-        const nextQty = Math.max(1, Math.round((curQty - 1) * 100) / 100);
-        activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, {
-          method: "PATCH",
-          body: { buy_qty: nextQty },
-        });
-        lists = await api("/api/lists");
-        render();
-      });
-
-      rowEl.querySelector('[data-action="qty-inc"]')?.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const curQty = Number(item.buy_qty) || 1;
-        const nextQty = Math.round((curQty + 1) * 100) / 100;
-        activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, {
-          method: "PATCH",
-          body: { buy_qty: nextQty },
-        });
-        lists = await api("/api/lists");
-        render();
-      });
-
       rowEl.querySelector('[data-action="delete-item"]')?.addEventListener("click", async (e) => {
         e.stopPropagation();
         activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, { method: "DELETE" });
@@ -955,8 +1023,8 @@ export async function renderListsView(container, state, navigate) {
               </div>
             </div>
             <div>
-              <label class="field-label">Notes</label>
-              <input class="input" name="notes" value="${esc(item.notes)}" placeholder="Brand preference, etc." />
+              <label class="field-label">Notes / Acceptable Substitutions</label>
+              <input class="input" name="notes" value="${esc(item.notes)}" placeholder="e.g. Organic preferred, 2% OK if out of whole..." />
             </div>
             ${activeList.store && !isGuest ? `
               <label class="row small">

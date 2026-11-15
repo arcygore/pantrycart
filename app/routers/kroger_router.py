@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import get_current_user, require_non_guest, utc_now_iso
 from app.database import get_db
+from app.units import clean_shopping_item_name
 
 router = APIRouter(prefix="/api/kroger", tags=["kroger"])
 
@@ -44,6 +45,13 @@ class KrogerPushCartPayload(BaseModel):
     items: list[KrogerPushItem] = Field(default_factory=list)
 
 
+class KrogerProductSearchPayload(BaseModel):
+    term: str = Field(min_length=1, max_length=160)
+    list_id: Optional[int] = None
+    location_id: Optional[str] = None
+    limit: int = Field(default=6, ge=1, le=15)
+
+
 def _infer_redirect_uri(request: Request, saved_redirect: str = "") -> str:
     if saved_redirect and saved_redirect.strip():
         return saved_redirect.strip()
@@ -66,6 +74,20 @@ def _get_kroger_config(conn) -> dict:
             "linked_store_id": None,
         }
     return dict(row)
+
+
+def _resolve_kroger_location(conn, cfg: dict, store_id: Optional[int]) -> tuple[str, str]:
+    """Return (location_id, location_name) preferring the store's own linked Kroger store."""
+    if store_id:
+        srow = conn.execute(
+            "SELECT name, kroger_location_id, kroger_location_name FROM stores WHERE id = ?",
+            (store_id,),
+        ).fetchone()
+        if srow and (srow["kroger_location_id"] or "").strip():
+            loc_id = srow["kroger_location_id"].strip()
+            loc_name = (srow["kroger_location_name"] or srow["name"] or "").strip()
+            return loc_id, loc_name
+    return (cfg.get("location_id") or "").strip(), (cfg.get("location_name") or "").strip()
 
 
 def _basic_auth_header(client_id: str, client_secret: str) -> str:
@@ -301,6 +323,10 @@ def set_kroger_location(payload: KrogerLocationPayload, user: dict = Depends(req
         existing = _get_kroger_config(conn)
         if not existing["client_id"]:
             raise HTTPException(status_code=400, detail="Configure Kroger Client ID & Secret first")
+        linked_sid = payload.linked_store_id if payload.linked_store_id is not None else existing["linked_store_id"]
+        loc_id = payload.location_id.strip()
+        loc_name = payload.location_name.strip()
+        loc_addr = payload.location_address.strip()
         conn.execute(
             """
             UPDATE kroger_config
@@ -309,14 +335,23 @@ def set_kroger_location(payload: KrogerLocationPayload, user: dict = Depends(req
             WHERE id = 1
             """,
             (
-                payload.location_id.strip(),
-                payload.location_name.strip(),
-                payload.location_address.strip(),
+                loc_id,
+                loc_name,
+                loc_addr,
                 payload.location_chain.strip() or "Kroger",
-                payload.linked_store_id if payload.linked_store_id is not None else existing["linked_store_id"],
+                linked_sid,
                 now,
             ),
         )
+        if linked_sid:
+            conn.execute(
+                """
+                UPDATE stores
+                SET kroger_location_id = ?, kroger_location_name = ?, kroger_location_address = ?
+                WHERE id = ?
+                """,
+                (loc_id, loc_name, loc_addr, linked_sid),
+            )
     return {"ok": True}
 
 
@@ -418,14 +453,15 @@ async def auto_map_kroger_aisles(list_id: int, user: dict = Depends(get_current_
     now = utc_now_iso()
     with get_db() as conn:
         cfg = _get_kroger_config(conn)
-        if not cfg["client_id"] or not cfg["client_secret"] or not cfg["location_id"]:
-            raise HTTPException(
-                status_code=400,
-                detail="Configure Kroger API credentials & select your Kroger store Location in Settings → Kroger API first.",
-            )
         lst = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
         if not lst:
             raise HTTPException(status_code=404, detail="Shopping list not found")
+        loc_id, loc_name = _resolve_kroger_location(conn, cfg, lst["store_id"])
+        if not cfg["client_id"] or not cfg["client_secret"] or not loc_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Configure Kroger API credentials & map a Kroger store Location (in Stores or Settings → Kroger API) first.",
+            )
         items = conn.execute(
             "SELECT * FROM shopping_list_items WHERE list_id = ? AND checked = 0",
             (list_id,),
@@ -437,12 +473,14 @@ async def auto_map_kroger_aisles(list_id: int, user: dict = Depends(get_current_
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         for item in items:
+            clean_term, _ = clean_shopping_item_name(item["name"])
+            search_term = clean_term or item["name"]
             resp = await client.get(
                 f"{KROGER_API_BASE}/products",
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
                 params={
-                    "filter.term": item["name"],
-                    "filter.locationId": cfg["location_id"],
+                    "filter.term": search_term,
+                    "filter.locationId": loc_id,
                     "filter.limit": 3,
                 },
             )
@@ -486,21 +524,22 @@ async def auto_map_kroger_aisles(list_id: int, user: dict = Depends(get_current_
                     )
             conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE id = ?", (now, list_id))
 
-    return {"updated_count": updated_count, "total_unchecked": len(items), "location_name": cfg["location_name"]}
+    return {"updated_count": updated_count, "total_unchecked": len(items), "location_name": loc_name}
 
 
 @router.post("/preview-cart/{list_id}")
 async def preview_kroger_cart(list_id: int, user: dict = Depends(get_current_user)):
     with get_db() as conn:
         cfg = _get_kroger_config(conn)
-        if not cfg["client_id"] or not cfg["client_secret"] or not cfg["location_id"]:
-            raise HTTPException(
-                status_code=400,
-                detail="Configure Kroger API credentials & select your Kroger store Location in Settings → Kroger API first.",
-            )
         lst = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
         if not lst:
             raise HTTPException(status_code=404, detail="Shopping list not found")
+        loc_id, loc_name = _resolve_kroger_location(conn, cfg, lst["store_id"])
+        if not cfg["client_id"] or not cfg["client_secret"] or not loc_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Configure Kroger API credentials & map a Kroger store Location (in Stores or Settings → Kroger API) first.",
+            )
         items = conn.execute(
             "SELECT * FROM shopping_list_items WHERE list_id = ? AND checked = 0",
             (list_id,),
@@ -511,12 +550,14 @@ async def preview_kroger_cart(list_id: int, user: dict = Depends(get_current_use
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         for item in items:
+            clean_term, _ = clean_shopping_item_name(item["name"])
+            search_term = clean_term or item["name"]
             resp = await client.get(
                 f"{KROGER_API_BASE}/products",
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
                 params={
-                    "filter.term": item["name"],
-                    "filter.locationId": cfg["location_id"],
+                    "filter.term": search_term,
+                    "filter.locationId": loc_id,
                     "filter.limit": 3,
                 },
             )
@@ -530,6 +571,7 @@ async def preview_kroger_cart(list_id: int, user: dict = Depends(get_current_use
                 {
                     "list_item_id": item["id"],
                     "list_item_name": item["name"],
+                    "search_term": search_term,
                     "quantity": max(1, int(math.ceil(float(item["buy_qty"] or 1)))),
                     "buy_unit": item["buy_unit"],
                     "candidates": candidates,
@@ -538,8 +580,63 @@ async def preview_kroger_cart(list_id: int, user: dict = Depends(get_current_use
             )
 
     return {
-        "location_name": cfg["location_name"],
+        "location_id": loc_id,
+        "location_name": loc_name,
         "items": previews,
+    }
+
+
+@router.post("/search-product")
+async def search_kroger_product(payload: KrogerProductSearchPayload, user: dict = Depends(get_current_user)):
+    clean_term, _ = clean_shopping_item_name(payload.term)
+    search_term = clean_term or payload.term.strip()
+    if not search_term:
+        raise HTTPException(status_code=400, detail="Enter a search term")
+
+    with get_db() as conn:
+        cfg = _get_kroger_config(conn)
+        loc_id = (payload.location_id or "").strip()
+        loc_name = ""
+        if not loc_id and payload.list_id is not None:
+            lst = conn.execute("SELECT store_id FROM shopping_lists WHERE id = ?", (payload.list_id,)).fetchone()
+            if lst:
+                loc_id, loc_name = _resolve_kroger_location(conn, cfg, lst["store_id"])
+        if not loc_id:
+            loc_id = (cfg.get("location_id") or "").strip()
+            loc_name = (cfg.get("location_name") or "").strip()
+        elif not loc_name:
+            loc_name = (cfg.get("location_name") or "").strip()
+
+        if not cfg["client_id"] or not cfg["client_secret"] or not loc_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Configure Kroger API credentials & map a Kroger store Location (in Stores or Settings → Kroger API) first.",
+            )
+
+    token = await _get_client_credentials_token(cfg["client_id"], cfg["client_secret"])
+    candidates = []
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"{KROGER_API_BASE}/products",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            params={
+                "filter.term": search_term,
+                "filter.locationId": loc_id,
+                "filter.limit": payload.limit,
+            },
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Kroger product search error ({resp.status_code})")
+        for p in (resp.json().get("data") or []):
+            s = _extract_kroger_product_summary(p)
+            if s["upc"]:
+                candidates.append(s)
+
+    return {
+        "term": search_term,
+        "location_id": loc_id,
+        "location_name": loc_name,
+        "candidates": candidates,
     }
 
 

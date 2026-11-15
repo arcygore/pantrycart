@@ -20,6 +20,9 @@ class StorePayload(BaseModel):
     aisle_departments: list[str] = Field(default_factory=lambda: list(GROCERY_AISLE_DEPTS))
     clone_locations_from_store_id: Optional[int] = None
     position: Optional[int] = None  # 1-based position in top bar
+    kroger_location_id: str = ""
+    kroger_location_name: str = ""
+    kroger_location_address: str = ""
 
 
 class StoreUpdatePayload(BaseModel):
@@ -29,6 +32,9 @@ class StoreUpdatePayload(BaseModel):
     departments: Optional[list[str]] = None
     aisle_departments: Optional[list[str]] = None
     position: Optional[int] = None  # 1-based position in top bar
+    kroger_location_id: Optional[str] = None
+    kroger_location_name: Optional[str] = None
+    kroger_location_address: Optional[str] = None
 
 
 class StoreReorderPayload(BaseModel):
@@ -93,6 +99,9 @@ def _serialize_store(conn, row, user_id: Optional[int] = None) -> dict:
         "shared_departments": base_depts,
         "has_custom_path": has_custom,
         "aisle_departments": [html.unescape(d).strip() for d in raw_adepts if d and d.strip()],
+        "kroger_location_id": row["kroger_location_id"] if "kroger_location_id" in row.keys() else "",
+        "kroger_location_name": row["kroger_location_name"] if "kroger_location_name" in row.keys() else "",
+        "kroger_location_address": row["kroger_location_address"] if "kroger_location_address" in row.keys() else "",
         "is_default": bool(row["is_default"]),
         "sort_order": row["sort_order"],
         "created_at": row["created_at"],
@@ -133,8 +142,12 @@ def create_store(payload: StorePayload, user: dict = Depends(require_non_guest))
         max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM stores").fetchone()[0]
         cur = conn.execute(
             """
-            INSERT INTO stores (name, store_type, chain, departments_json, aisle_departments_json, is_default, sort_order, created_at)
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+            INSERT INTO stores (
+                name, store_type, chain, departments_json, aisle_departments_json,
+                kroger_location_id, kroger_location_name, kroger_location_address,
+                is_default, sort_order, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
                 payload.name.strip(),
@@ -142,6 +155,9 @@ def create_store(payload: StorePayload, user: dict = Depends(require_non_guest))
                 payload.chain.strip() or payload.name.strip(),
                 json.dumps(depts),
                 json.dumps(aisle_depts),
+                payload.kroger_location_id.strip(),
+                payload.kroger_location_name.strip(),
+                payload.kroger_location_address.strip(),
                 max_order + 1,
                 now,
             ),
@@ -232,13 +248,29 @@ def update_store(store_id: int, payload: StoreUpdatePayload, user: dict = Depend
             if payload.aisle_departments is not None
             else row["aisle_departments_json"]
         )
+        k_loc_id = (
+            payload.kroger_location_id.strip()
+            if payload.kroger_location_id is not None
+            else (row["kroger_location_id"] if "kroger_location_id" in row.keys() else "")
+        )
+        k_loc_name = (
+            payload.kroger_location_name.strip()
+            if payload.kroger_location_name is not None
+            else (row["kroger_location_name"] if "kroger_location_name" in row.keys() else "")
+        )
+        k_loc_addr = (
+            payload.kroger_location_address.strip()
+            if payload.kroger_location_address is not None
+            else (row["kroger_location_address"] if "kroger_location_address" in row.keys() else "")
+        )
         conn.execute(
             """
             UPDATE stores
-            SET name = ?, store_type = ?, chain = ?, departments_json = ?, aisle_departments_json = ?
+            SET name = ?, store_type = ?, chain = ?, departments_json = ?, aisle_departments_json = ?,
+                kroger_location_id = ?, kroger_location_name = ?, kroger_location_address = ?
             WHERE id = ?
             """,
-            (name, stype, chain, depts, adepts, store_id),
+            (name, stype, chain, depts, adepts, k_loc_id, k_loc_name, k_loc_addr, store_id),
         )
         if payload.position is not None:
             _reposition_store(conn, store_id, payload.position)

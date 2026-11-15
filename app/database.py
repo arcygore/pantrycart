@@ -66,9 +66,18 @@ CREATE TABLE IF NOT EXISTS stores (
     chain TEXT NOT NULL DEFAULT '',
     departments_json TEXT NOT NULL,
     aisle_departments_json TEXT NOT NULL,
+    kroger_location_id TEXT NOT NULL DEFAULT '',
+    kroger_location_name TEXT NOT NULL DEFAULT '',
+    kroger_location_address TEXT NOT NULL DEFAULT '',
     is_default INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS user_store_paths (
@@ -510,6 +519,7 @@ SEED_CATALOG = [
     ("trash bags", "Trash Bags", ["garbage bags"], "Household & Personal", 40, "count", "40-count box", 0),
     ("chicken tenderloins", "Chicken Tenderloins", ["chicken tenders", "boneless chicken tenderloins"], "Meat & Seafood", 1.25, "lb", "1.25 lb pack", 0),
     ("salad mix", "Salad Mix", ["salad kit", "chopped salad kit", "spring mix salad"], "Produce", 1, "bag", "bag / clamshell", 0),
+    ("brussels sprouts", "Brussels Sprouts", ["brussel sprouts", "fresh brussels sprouts"], "Produce", 1, "lb", "1 lb bag", 0),
 ]
 
 SEED_WEEKLY_TEMPLATE = [
@@ -670,6 +680,89 @@ def _run_migrations(conn: sqlite3.Connection):
         """
     )
 
+    store_cols = {r["name"] for r in conn.execute("PRAGMA table_info(stores)").fetchall()}
+    for col_name in ("kroger_location_id", "kroger_location_name", "kroger_location_address"):
+        if col_name not in store_cols:
+            conn.execute(f"ALTER TABLE stores ADD COLUMN {col_name} TEXT NOT NULL DEFAULT ''")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    # Backfill global Kroger location onto its linked store (or first Kroger store) if not yet assigned
+    try:
+        kcfg = conn.execute(
+            "SELECT location_id, location_name, location_address, linked_store_id FROM kroger_config WHERE id = 1"
+        ).fetchone()
+    except Exception:
+        kcfg = None
+    if kcfg and (kcfg["location_id"] or "").strip():
+        target_sid = kcfg["linked_store_id"]
+        if target_sid:
+            target_store = conn.execute(
+                "SELECT id, kroger_location_id FROM stores WHERE id = ?",
+                (target_sid,),
+            ).fetchone()
+        else:
+            target_store = conn.execute(
+                "SELECT id, kroger_location_id FROM stores WHERE LOWER(chain) LIKE '%kroger%' OR LOWER(name) LIKE '%kroger%' ORDER BY sort_order ASC, id ASC LIMIT 1"
+            ).fetchone()
+        if target_store and not (target_store["kroger_location_id"] or "").strip():
+            conn.execute(
+                """
+                UPDATE stores
+                SET kroger_location_id = ?, kroger_location_name = ?, kroger_location_address = ?
+                WHERE id = ?
+                """,
+                (
+                    kcfg["location_id"] or "",
+                    kcfg["location_name"] or "",
+                    kcfg["location_address"] or "",
+                    target_store["id"],
+                ),
+            )
+
+    # Backfill-clean existing recipe ingredients and list items that embed parenthetical or ' - ' prep notes
+    from app.units import clean_shopping_item_name, normalize_item_key
+
+    dirty_ings = conn.execute(
+        "SELECT id, name, prep_notes FROM recipe_ingredients WHERE name LIKE '%(%' OR name LIKE '% - %'"
+    ).fetchall()
+    for ing in dirty_ings:
+        cleaned_name, extra_prep = clean_shopping_item_name(ing["name"] or "")
+        if cleaned_name and cleaned_name != (ing["name"] or ""):
+            existing_prep = (ing["prep_notes"] or "").strip()
+            if extra_prep and extra_prep.lower() not in existing_prep.lower():
+                merged_prep = f"{existing_prep}, {extra_prep}" if existing_prep else extra_prep
+            else:
+                merged_prep = existing_prep
+            conn.execute(
+                "UPDATE recipe_ingredients SET name = ?, prep_notes = ? WHERE id = ?",
+                (cleaned_name, merged_prep, ing["id"]),
+            )
+
+    dirty_list_items = conn.execute(
+        "SELECT id, name, prep_notes FROM shopping_list_items WHERE name LIKE '%(%' OR name LIKE '% - %'"
+    ).fetchall()
+    for li in dirty_list_items:
+        cleaned_name, extra_prep = clean_shopping_item_name(li["name"] or "")
+        if cleaned_name and cleaned_name != (li["name"] or ""):
+            existing_prep = (li["prep_notes"] or "").strip()
+            if extra_prep and extra_prep.lower() not in existing_prep.lower():
+                merged_prep = f"{existing_prep}, {extra_prep}" if existing_prep else extra_prep
+            else:
+                merged_prep = existing_prep
+            conn.execute(
+                "UPDATE shopping_list_items SET name = ?, item_key = ?, prep_notes = ? WHERE id = ?",
+                (cleaned_name, normalize_item_key(cleaned_name), merged_prep, li["id"]),
+            )
+
 
 def init_db():
     with get_db() as conn:
@@ -718,7 +811,7 @@ def _seed_defaults(conn: sqlite3.Connection):
             )
     else:
         # Ensure newly added seed catalog items exist on upgrade
-        for item in SEED_CATALOG[-2:]:
+        for item in SEED_CATALOG[-3:]:
             canonical, display, aliases, dept, pkg_size, pkg_unit, pkg_label, is_staple = item
             conn.execute(
                 """
@@ -772,6 +865,24 @@ def _seed_defaults(conn: sqlite3.Connection):
                 """,
                 (pname, pkey, pcat, pnote, pstock, now),
             )
+
+    # Seed default quick recipe filter chips if not yet stored
+    if not conn.execute("SELECT 1 FROM app_settings WHERE key = 'recipe_quick_queries'").fetchone():
+        default_quick_queries = [
+            "Dinner",
+            "Lunch",
+            "Breakfast",
+            "Dessert",
+            "Quick",
+            "High Protein",
+            "Chicken",
+            "Beef",
+            "Vegetarian",
+        ]
+        conn.execute(
+            "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)",
+            ("recipe_quick_queries", json.dumps(default_quick_queries), now),
+        )
 
     # Seed sample recipes if empty
     recipe_count = conn.execute("SELECT COUNT(*) FROM recipes").fetchone()[0]

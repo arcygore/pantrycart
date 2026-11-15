@@ -101,10 +101,10 @@ def get_meal_plan(user: dict = Depends(get_current_user)):
         rem = max(0.0, round(eff - alloc, 1))
         pf = _portion_scale_factor(r["servings"], r["custom_portions"])
         cal = round(r["calories_per_serving"] * pf) if r["calories_per_serving"] is not None else None
-        pro = round(r["protein_g"] * pf, 1) if r["protein_g"] is not None else None
-        carb = round(r["carbs_g"] * pf, 1) if r["carbs_g"] is not None else None
-        fat = round(r["fat_g"] * pf, 1) if r["fat_g"] is not None else None
-        fib = round(r["fiber_g"] * pf, 1) if r["fiber_g"] is not None else None
+        pro = round(r["protein_g"] * pf) if r["protein_g"] is not None else None
+        carb = round(r["carbs_g"] * pf) if r["carbs_g"] is not None else None
+        fat = round(r["fat_g"] * pf) if r["fat_g"] is not None else None
+        fib = round(r["fiber_g"] * pf) if r["fiber_g"] is not None else None
         result.append(
             {
                 "id": r["id"],
@@ -234,17 +234,17 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
         srv_used = float(s["servings_used"] or 1.0)
         if s["slot_cal"] is not None:
             cal = round(float(s["slot_cal"]))
-            pro = round(float(s["slot_pro"] or 0.0), 1)
-            carb = round(float(s["slot_carb"] or 0.0), 1)
-            fat = round(float(s["slot_fat"] or 0.0), 1)
-            fib = round(float(s["slot_fib"] or 0.0), 1)
+            pro = round(float(s["slot_pro"] or 0.0))
+            carb = round(float(s["slot_carb"] or 0.0))
+            fat = round(float(s["slot_fat"] or 0.0))
+            fib = round(float(s["slot_fib"] or 0.0))
         elif s["recipe_id"] and s["calories_per_serving"] is not None:
             pf = _portion_scale_factor(s["recipe_servings"], s["recipe_custom_portions"])
             cal = round(float(s["calories_per_serving"]) * pf * srv_used)
-            pro = round(float(s["protein_g"] or 0.0) * pf * srv_used, 1)
-            carb = round(float(s["carbs_g"] or 0.0) * pf * srv_used, 1)
-            fat = round(float(s["fat_g"] or 0.0) * pf * srv_used, 1)
-            fib = round(float(s["fiber_g"] or 0.0) * pf * srv_used, 1)
+            pro = round(float(s["protein_g"] or 0.0) * pf * srv_used)
+            carb = round(float(s["carbs_g"] or 0.0) * pf * srv_used)
+            fat = round(float(s["fat_g"] or 0.0) * pf * srv_used)
+            fib = round(float(s["fiber_g"] or 0.0) * pf * srv_used)
         else:
             est = estimate_single_food_macros(display_title, srv_used)
             cal = est["calories"]

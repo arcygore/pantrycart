@@ -257,6 +257,62 @@ def list_recipes(q: str = "", tag: str = "", user: dict = Depends(get_current_us
     return items
 
 
+DEFAULT_QUICK_QUERIES = [
+    "Dinner",
+    "Lunch",
+    "Breakfast",
+    "Dessert",
+    "Quick",
+    "High Protein",
+    "Chicken",
+    "Beef",
+    "Vegetarian",
+]
+
+
+class QuickQueriesPayload(BaseModel):
+    queries: list[str] = Field(default_factory=list)
+
+
+@router.get("/quick-queries")
+def get_recipe_quick_queries(user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = 'recipe_quick_queries'").fetchone()
+        if row:
+            try:
+                parsed = json.loads(row["value_json"])
+                if isinstance(parsed, list):
+                    cleaned = [str(x).strip() for x in parsed if str(x).strip()]
+                    return {"queries": cleaned}
+            except Exception:
+                pass
+    return {"queries": list(DEFAULT_QUICK_QUERIES)}
+
+
+@router.put("/quick-queries")
+def update_recipe_quick_queries(payload: QuickQueriesPayload, user: dict = Depends(require_non_guest)):
+    seen_lower: set[str] = set()
+    cleaned: list[str] = []
+    for raw in payload.queries:
+        val = (raw or "").strip()
+        if val and val.lower() not in seen_lower:
+            seen_lower.add(val.lower())
+            cleaned.append(val)
+    now = utc_now_iso()
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES ('recipe_quick_queries', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (json.dumps(cleaned), now),
+        )
+    return {"queries": cleaned}
+
+
 @router.post("/scrape")
 async def scrape_recipe(payload: ScrapePayload, user: dict = Depends(get_current_user)):
     try:

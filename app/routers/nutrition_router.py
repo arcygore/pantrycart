@@ -303,10 +303,10 @@ def estimate_single_food_macros(food_name: str, servings_used: float = 1.0) -> d
     m = estimate_ingredient_macros(food_name, servings_used, "count")
     return {
         "calories": round(m["calories"]),
-        "protein_g": round(m["protein_g"], 1),
-        "carbs_g": round(m["carbs_g"], 1),
-        "fat_g": round(m["fat_g"], 1),
-        "fiber_g": round(m["fiber_g"], 1),
+        "protein_g": round(m["protein_g"]),
+        "carbs_g": round(m["carbs_g"]),
+        "fat_g": round(m["fat_g"]),
+        "fiber_g": round(m["fiber_g"]),
     }
 
 
@@ -319,10 +319,10 @@ def compute_recipe_macros(ingredients: list[dict], servings: float) -> dict[str,
     srv = max(float(servings or 1.0), 0.5)
     return {
         "calories_per_serving": round(totals["calories"] / srv),
-        "protein_g": round(totals["protein_g"] / srv, 1),
-        "carbs_g": round(totals["carbs_g"] / srv, 1),
-        "fat_g": round(totals["fat_g"] / srv, 1),
-        "fiber_g": round(totals["fiber_g"] / srv, 1),
+        "protein_g": round(totals["protein_g"] / srv),
+        "carbs_g": round(totals["carbs_g"] / srv),
+        "fat_g": round(totals["fat_g"] / srv),
+        "fiber_g": round(totals["fiber_g"] / srv),
     }
 
 

@@ -57,9 +57,19 @@ export async function renderStoresView(container, state) {
                   ${activeStore.has_custom_path
                     ? `<span class="badge badge-info">Your Custom Path</span>`
                     : `<span class="badge">Shared Default Order</span>`}
+                  ${activeStore.kroger_location_id
+                    ? `<span class="badge badge-info" title="${esc(activeStore.kroger_location_address || "")}">🏪 ${esc(activeStore.kroger_location_name || ("Kroger #" + activeStore.kroger_location_id))}</span>`
+                    : ""}
                 </div>
               </div>
-              ${isGuest ? "" : `<button class="btn btn-sm" id="edit-store-btn">Edit Store &amp; Position</button>`}
+              ${isGuest ? "" : `
+                <div class="row-wrap" style="gap: 6px;">
+                  ${activeStore.store_type === "grocery" || activeStore.kroger_location_id ? `
+                    <button class="btn btn-sm" id="link-kroger-store-btn" title="Map a real Kroger / Harris Teeter / Fred Meyer store location to this store tab">🏪 ${activeStore.kroger_location_id ? "Change Kroger Store" : "Link Kroger Store"}</button>
+                  ` : ""}
+                  <button class="btn btn-sm" id="edit-store-btn">Edit Store &amp; Position</button>
+                </div>
+              `}
             </div>
             <div class="row-wrap" style="justify-content: space-between; gap: 8px;">
               <p class="small muted" style="margin: 0; flex: 1; min-width: 180px;">
@@ -461,6 +471,93 @@ Other</textarea>
       });
     };
 
+    const openLinkKrogerModal = () => {
+      openModal(`Link Kroger Store — ${activeStore.name}`, `
+        <div class="stack-md">
+          <p class="small muted" style="margin: 0;">
+            Link <strong>${esc(activeStore.name)}</strong> to a specific Kroger family store (Kroger, Ralphs, Fred Meyer, King Soopers, Harris Teeter, etc.) so <strong>Auto-Map Aisles</strong> and <strong>Send to Kroger Cart</strong> search this exact store.
+          </p>
+          ${activeStore.kroger_location_id ? `
+            <div class="row-wrap" style="justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);">
+              <div class="small">
+                <strong>Currently linked:</strong> ${esc(activeStore.kroger_location_name || activeStore.kroger_location_id)}
+                ${activeStore.kroger_location_address ? `<div class="muted">${esc(activeStore.kroger_location_address)}</div>` : ""}
+              </div>
+              <button class="btn btn-sm btn-danger" type="button" id="unlink-store-kroger-btn">Unlink</button>
+            </div>
+          ` : ""}
+          <form id="store-kroger-zip-form" class="row-wrap">
+            <input class="input grow" id="store-kroger-zip-input" placeholder="Enter 5-digit ZIP code (e.g. 30068)" required />
+            <button class="btn btn-primary" type="submit">Find Stores</button>
+          </form>
+          <div id="store-kroger-loc-results" class="stack-sm"></div>
+          <p class="small muted" style="margin: 0;">Requires Kroger Client ID &amp; Secret configured in Settings → Kroger API.</p>
+        </div>
+      `, (close) => {
+        document.getElementById("unlink-store-kroger-btn")?.addEventListener("click", async () => {
+          await api(`/api/stores/${activeStore.id}`, {
+            method: "PUT",
+            body: {
+              kroger_location_id: "",
+              kroger_location_name: "",
+              kroger_location_address: "",
+            },
+          });
+          stores = await api("/api/stores");
+          activeStore = stores.find((s) => s.id === activeStore.id) || stores[0] || null;
+          close();
+          render();
+          toast("Unlinked Kroger store");
+        });
+
+        document.getElementById("store-kroger-zip-form")?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const zip = document.getElementById("store-kroger-zip-input").value.trim();
+          const resBox = document.getElementById("store-kroger-loc-results");
+          resBox.innerHTML = `<div class="small muted">Searching Kroger locations near ${esc(zip)}...</div>`;
+          try {
+            const locs = await api(`/api/kroger/locations?zip_code=${encodeURIComponent(zip)}`);
+            if (!locs.length) {
+              resBox.innerHTML = `<div class="small muted">No Kroger-family stores found near ${esc(zip)}.</div>`;
+              return;
+            }
+            resBox.innerHTML = locs.map((l) => `
+              <div class="row-wrap" style="justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);">
+                <div>
+                  <div style="font-weight: 700;">${esc(l.name)} <span class="badge">${esc(l.chain || "Kroger")}</span></div>
+                  <div class="small muted">${esc(l.address)} · ID ${esc(l.location_id)}</div>
+                </div>
+                <button class="btn btn-primary btn-sm pick-store-kroger-btn" type="button"
+                  data-id="${esc(l.location_id)}"
+                  data-name="${esc(l.name)}"
+                  data-addr="${esc(l.address)}">Select Store</button>
+              </div>
+            `).join("");
+            resBox.querySelectorAll(".pick-store-kroger-btn").forEach((btn) => {
+              btn.addEventListener("click", async () => {
+                await api(`/api/stores/${activeStore.id}`, {
+                  method: "PUT",
+                  body: {
+                    kroger_location_id: btn.dataset.id,
+                    kroger_location_name: btn.dataset.name,
+                    kroger_location_address: btn.dataset.addr,
+                  },
+                });
+                stores = await api("/api/stores");
+                activeStore = stores.find((s) => s.id === activeStore.id) || stores[0] || null;
+                close();
+                render();
+                toast(`Linked ${activeStore.name} to ${btn.dataset.name}`);
+              });
+            });
+          } catch (err) {
+            resBox.innerHTML = `<div class="small" style="color: var(--danger);">${esc(err.message)}</div>`;
+          }
+        });
+      });
+    };
+
+    document.getElementById("link-kroger-store-btn")?.addEventListener("click", openLinkKrogerModal);
     document.getElementById("add-loc-btn")?.addEventListener("click", () => openLocModal(null));
     document.querySelectorAll(".edit-loc-btn").forEach((btn) => {
       btn.addEventListener("click", () => {

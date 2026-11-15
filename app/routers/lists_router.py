@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from app.auth import get_current_user, require_non_guest, utc_now_iso
 from app.database import GROCERY_DEPARTMENTS, get_db
 from app.routers.stores_router import get_effective_store_departments
-from app.units import match_catalog_item, normalize_item_key, parse_ingredient_line
+from app.units import clean_shopping_item_name, match_catalog_item, normalize_item_key, parse_ingredient_line
 
 router = APIRouter(prefix="/api/lists", tags=["lists"])
 
@@ -151,6 +151,9 @@ def build_list_response(conn, list_row, user_id: Optional[int] = None) -> dict:
                 "departments": store_depts,
                 "aisle_departments": aisle_depts,
                 "has_custom_path": has_custom_path,
+                "kroger_location_id": srow["kroger_location_id"] if "kroger_location_id" in srow.keys() else "",
+                "kroger_location_name": srow["kroger_location_name"] if "kroger_location_name" in srow.keys() else "",
+                "kroger_location_address": srow["kroger_location_address"] if "kroger_location_address" in srow.keys() else "",
             }
 
     loc_map = {}
@@ -545,6 +548,10 @@ def add_item_to_list_internal(conn, list_id: int, payload: AddListItemPayload, u
             clean_name = parsed["name"]
         else:
             buy_qty = 1.0
+            clean_name, _ = clean_shopping_item_name(parsed["name"] or raw_name)
+    else:
+        stripped_name, _ = clean_shopping_item_name(raw_name)
+        clean_name = stripped_name or raw_name
 
     catalog_rows = [dict(r) for r in conn.execute("SELECT * FROM product_catalog").fetchall()]
     cat = match_catalog_item(clean_name, catalog_rows)

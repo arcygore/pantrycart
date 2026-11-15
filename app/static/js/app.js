@@ -53,7 +53,31 @@ function _applyInitialHashRoute() {
   }
 }
 
+const THEME_STORAGE_KEY = "pantrycart_theme";
+
+function _applyTheme(theme) {
+  const normalized = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = normalized;
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, normalized);
+  } catch {
+    // Ignore storage quota errors
+  }
+  document.querySelectorAll(".theme-toggle-btn").forEach((btn) => {
+    const isDark = normalized === "dark";
+    btn.textContent = isDark ? "☀️ Light" : "🌙 Dark";
+    btn.title = isDark ? "Switch to Light Mode" : "Switch to Dark Mode";
+  });
+}
+
+window.__pantrySetTheme = _applyTheme;
+
 async function bootstrap() {
+  try {
+    _applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || "light");
+  } catch {
+    _applyTheme("light");
+  }
   const buildId = window.__PANTRYCART_BUILD__ || "";
   if ("caches" in window) {
     caches.keys()
@@ -113,6 +137,7 @@ function renderShell() {
             <span class="badge">@${esc(state.user.username)}</span>
             ${state.user.is_guest ? `<span class="badge badge-accent">Guest</span>` : ""}
             <span class="badge" style="opacity: 0.75;" title="App Version">v1.4</span>
+            <button type="button" class="btn btn-sm theme-toggle-btn" style="padding: 2px 8px; min-height: 24px; font-size: 0.74rem;"></button>
           </span>
         </div>
       </aside>
@@ -123,7 +148,10 @@ function renderShell() {
             <img src="/static/icon.svg" alt="PantryCart" />
             <span>PantryCart</span>
           </div>
-          <span class="user-pill">${esc(state.user.display_name)}${state.user.is_guest ? " (Guest)" : ""}</span>
+          <span class="row" style="gap: 6px; align-items: center;">
+            <button type="button" class="btn btn-sm theme-toggle-btn" style="padding: 3px 9px; min-height: 28px; font-size: 0.78rem;"></button>
+            <span class="user-pill">${esc(state.user.display_name)}${state.user.is_guest ? " (Guest)" : ""}</span>
+          </span>
         </header>
         <div id="view-root"></div>
       </main>
@@ -141,6 +169,14 @@ function renderShell() {
 
   document.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => navigate(btn.dataset.nav));
+  });
+
+  _applyTheme(document.documentElement.dataset.theme || "light");
+  document.querySelectorAll(".theme-toggle-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      _applyTheme(next);
+    });
   });
 
   loadCurrentView();

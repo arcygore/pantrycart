@@ -117,6 +117,15 @@ export async function renderSettingsView(container, state, onLogout) {
             <button class="btn btn-primary" type="submit">Update Password</button>
           </form>
         </div>
+
+        <div class="card stack-md">
+          <h2 style="margin: 0; font-size: 1.08rem;">Appearance (Theme)</h2>
+          <p class="small muted" style="margin: 0;">Choose light or dark mode for this browser.</p>
+          <div class="row-wrap" style="gap: 8px;">
+            <button type="button" class="btn ${document.documentElement.dataset.theme !== "dark" ? "btn-primary" : ""}" id="settings-theme-light">☀️ Light Mode</button>
+            <button type="button" class="btn ${document.documentElement.dataset.theme === "dark" ? "btn-primary" : ""}" id="settings-theme-dark">🌙 Dark Mode</button>
+          </div>
+        </div>
       </div>
     `;
   }
@@ -218,17 +227,37 @@ export async function renderSettingsView(container, state, onLogout) {
         <div class="card stack-md">
           <div class="row-wrap" style="justify-content: space-between;">
             <div>
-              <h2 style="margin: 0; font-size: 1.08rem;">Step 2: Select Your Local Kroger Store (for Aisle &amp; Price Lookup)</h2>
+              <h2 style="margin: 0; font-size: 1.08rem;">Step 2: Map Kroger Stores (for Aisle &amp; Price Lookup)</h2>
               <p class="small muted" style="margin: 2px 0 0;">
                 ${krogerStatus.location_id
-                  ? `Selected: <strong>${esc(krogerStatus.location_name)}</strong> — ${esc(krogerStatus.location_address)} (<code>${esc(krogerStatus.location_id)}</code>)`
+                  ? `Default Global Store: <strong>${esc(krogerStatus.location_name)}</strong> — ${esc(krogerStatus.location_address)} (<code>${esc(krogerStatus.location_id)}</code>)`
                   : "Search by ZIP code after saving your credentials above."}
               </p>
             </div>
             ${krogerStatus.location_id ? `<span class="badge badge-primary">Store Selected ✓</span>` : ""}
           </div>
 
-          <form id="kroger-zip-form" class="row-wrap">
+          <div class="stack-xs" style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg);">
+            <div class="small" style="font-weight: 700;">Per-Store Kroger Mappings:</div>
+            ${stores.filter((s) => s.store_type === "grocery" || s.kroger_location_id).map((s) => `
+              <div class="row-wrap small" style="justify-content: space-between; gap: 6px;">
+                <span><strong>${esc(s.name)}</strong></span>
+                <span class="${s.kroger_location_id ? "badge badge-info" : "muted"}">
+                  ${s.kroger_location_id
+                    ? `🏪 ${esc(s.kroger_location_name || s.kroger_location_id)}`
+                    : "Using global default"}
+                </span>
+              </div>
+            `).join("")}
+          </div>
+
+          <form id="kroger-zip-form" class="row-wrap" style="align-items: center;">
+            <select class="select" id="kroger-target-store-select" style="width: auto; min-width: 190px; min-height: 36px;">
+              <option value="">Global Default Kroger Location</option>
+              ${stores.filter((s) => s.store_type === "grocery" || s.kroger_location_id).map((s) => `
+                <option value="${s.id}" ${krogerStatus.linked_store_id === s.id ? "selected" : ""}>Assign to: ${esc(s.name)}</option>
+              `).join("")}
+            </select>
             <input class="input" name="zip_code" placeholder="Enter 5-digit ZIP code (e.g. 30309)..." style="max-width: 240px;" required />
             <button class="btn btn-sm" type="submit" ${krogerStatus.configured ? "" : "disabled"}>Search Nearby Kroger Stores</button>
           </form>
@@ -597,8 +626,38 @@ sensor:
       }
     });
 
+    document.getElementById("settings-theme-light")?.addEventListener("click", () => {
+      if (window.__pantrySetTheme) window.__pantrySetTheme("light");
+      else {
+        localStorage.setItem("pantrycart_theme", "light");
+        document.documentElement.dataset.theme = "light";
+      }
+      render();
+    });
+
+    document.getElementById("settings-theme-dark")?.addEventListener("click", () => {
+      if (window.__pantrySetTheme) window.__pantrySetTheme("dark");
+      else {
+        localStorage.setItem("pantrycart_theme", "dark");
+        document.documentElement.dataset.theme = "dark";
+      }
+      render();
+    });
+
     document.querySelectorAll(".select-kroger-loc-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
+        const targetSel = document.getElementById("kroger-target-store-select");
+        const targetSid = targetSel && targetSel.value ? Number(targetSel.value) : null;
+        if (targetSid) {
+          await api(`/api/stores/${targetSid}`, {
+            method: "PUT",
+            body: {
+              kroger_location_id: btn.dataset.locId,
+              kroger_location_name: btn.dataset.locName,
+              kroger_location_address: btn.dataset.locAddr,
+            },
+          });
+        }
         await api("/api/kroger/location", {
           method: "PUT",
           body: {
@@ -606,11 +665,19 @@ sensor:
             location_name: btn.dataset.locName,
             location_address: btn.dataset.locAddr,
             location_chain: btn.dataset.locChain,
+            linked_store_id: targetSid,
           },
         });
-        krogerStatus = await api("/api/kroger/status");
+        const [newStatus, updatedStores] = await Promise.all([
+          api("/api/kroger/status"),
+          api("/api/stores"),
+        ]);
+        krogerStatus = newStatus;
+        if (Array.isArray(stores) && Array.isArray(updatedStores)) {
+          stores.splice(0, stores.length, ...updatedStores);
+        }
         krogerSearchResults = [];
-        toast(`Selected ${krogerStatus.location_name}!`);
+        toast(`Selected ${btn.dataset.locName}!`);
         render();
       });
     });

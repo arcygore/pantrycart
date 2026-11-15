@@ -74,10 +74,10 @@ export async function renderPlannerView(container, state, navigate) {
     return {
       hasAny,
       calories: Math.round(cal),
-      protein_g: Math.round(pro * 10) / 10,
-      carbs_g: Math.round(carb * 10) / 10,
-      fat_g: Math.round(fat * 10) / 10,
-      fiber_g: Math.round(fib * 10) / 10,
+      protein_g: Math.round(pro),
+      carbs_g: Math.round(carb),
+      fat_g: Math.round(fat),
+      fiber_g: Math.round(fib),
     };
   }
 
@@ -253,9 +253,9 @@ export async function renderPlannerView(container, state, navigate) {
                     ${totals.hasAny ? `
                       <div class="day-macro-bar">
                         <span class="macro-chip cal">${totals.calories} kcal</span>
-                        <span class="macro-chip pro">${fmtQty(totals.protein_g)}g P</span>
-                        <span class="macro-chip">${fmtQty(totals.carbs_g)}g C</span>
-                        <span class="macro-chip">${fmtQty(totals.fat_g)}g F</span>
+                        <span class="macro-chip pro">${totals.protein_g}g P</span>
+                        <span class="macro-chip">${totals.carbs_g}g C</span>
+                        <span class="macro-chip">${totals.fat_g}g F</span>
                       </div>
                     ` : ""}
 
@@ -279,7 +279,7 @@ export async function renderPlannerView(container, state, navigate) {
                                 </div>
                                 ${entry.calories ? `
                                   <div class="small muted" style="font-size: 0.72rem; margin-top: 2px;">
-                                    ${Math.round(entry.calories)} kcal · ${fmtQty(entry.protein_g)}g P · ${fmtQty(entry.carbs_g)}g C · ${fmtQty(entry.fat_g)}g F
+                                    ${Math.round(entry.calories)} kcal · ${Math.round(Number(entry.protein_g || 0))}g P · ${Math.round(Number(entry.carbs_g || 0))}g C · ${Math.round(Number(entry.fat_g || 0))}g F
                                     ${entry.logged_at ? `<span style="color: var(--primary); font-weight: 700;"> · ✓ Logged</span>` : ""}
                                   </div>
                                 ` : ""}
@@ -418,7 +418,7 @@ export async function renderPlannerView(container, state, navigate) {
           </div>
           <div>
             <label class="field-label">Who is eating this? (Optional)</label>
-            <input class="input" name="person_name" id="slot-person-input" placeholder="Blank = Everyone, or type name (e.g. Ryan, Wife)" />
+            <input class="input" name="person_name" id="slot-person-input" placeholder="Blank = Everyone, or type name (e.g. Alex, Partner)" />
             ${members.length ? `
               <div class="row-wrap" style="gap: 4px; margin-top: 5px;">
                 <button type="button" class="badge person-preset-btn" data-person="" style="border: 1px solid var(--border);">Everyone</button>
@@ -588,10 +588,10 @@ export async function renderPlannerView(container, state, navigate) {
           day: entry.day_name,
           meals: entry.title,
           calories: Math.round(entry.calories || 0),
-          protein_g: Number(entry.protein_g || 0),
-          carbs_g: Number(entry.carbs_g || 0),
-          fat_g: Number(entry.fat_g || 0),
-          fiber_g: Number(entry.fiber_g || 0),
+          protein_g: Math.round(Number(entry.protein_g || 0)),
+          carbs_g: Math.round(Number(entry.carbs_g || 0)),
+          fat_g: Math.round(Number(entry.fat_g || 0)),
+          fiber_g: Math.round(Number(entry.fiber_g || 0)),
         });
       });
     });
