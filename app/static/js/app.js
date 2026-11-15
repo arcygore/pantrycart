@@ -55,7 +55,10 @@ function _applyInitialHashRoute() {
 
 async function bootstrap() {
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker
+      .register("/sw.js", { updateViaCache: "none" })
+      .then((reg) => reg.update().catch(() => {}))
+      .catch(() => {});
   }
   _applyInitialHashRoute();
 
@@ -95,7 +98,10 @@ function renderShell() {
         </nav>
         <div class="sidebar-footer">
           <span style="font-weight: 600;">${esc(state.user.display_name)}</span>
-          <span class="badge">@${esc(state.user.username)}</span>
+          <span style="display: inline-flex; align-items: center; gap: 6px;">
+            <span class="badge">@${esc(state.user.username)}</span>
+            <span class="badge" style="opacity: 0.75;" title="App Version">v1.4</span>
+          </span>
         </div>
       </aside>
 

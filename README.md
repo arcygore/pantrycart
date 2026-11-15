@@ -14,12 +14,13 @@ A self-hosted, single-container web app (PWA) designed for **Unraid + Cloudflare
 
 ## Deploying on Unraid (Directly from GitHub)
 
-### Option A: Unraid Compose Manager (No manual clone needed)
-Create a new stack in Unraid Compose Manager (or Portainer / Dockge) and paste:
+### Option A (Recommended): Pre-Built GHCR Image in Unraid Compose Manager
+Every push to `main` automatically builds a fresh image at `ghcr.io/arcygore/pantrycart:latest` via GitHub Actions (`.github/workflows/docker-publish.yml`). Using `image:` makes Unraid's **Update Stack** button pull updates cleanly every time without hitting local Docker build caches:
+
 ```yaml
 services:
   pantrycart:
-    build: https://github.com/arcygore/pantrycart.git#main
+    image: ghcr.io/arcygore/pantrycart:latest
     container_name: pantrycart
     restart: unless-stopped
     ports:
@@ -31,9 +32,16 @@ services:
       - COOKIE_SECURE=auto
       - SESSION_DAYS=90
 ```
-Then click **Compose Up**. To update later, run **Update Stack** / `docker compose build --no-cache && docker compose up -d`.
+Wait ~1 minute after a GitHub push for the GitHub Action to finish, then click **Update Stack** in Unraid Compose Manager! *(Note: In GitHub → Packages → `pantrycart` → Package Settings, ensure visibility is **Public** so Unraid can pull without signing in.)*
 
-### Option B: Clone on Unraid
+### Option B: Direct GitHub `build:` in Unraid Compose Manager
+If your stack uses `build: https://github.com/arcygore/pantrycart.git#main` instead of `image:`, clicking **Update Stack** in Compose Manager runs `docker compose pull` (which skips `build:` services) or reuses cached Docker build layers unless forced. To force a fresh build & recreate from Unraid's terminal:
+```bash
+docker compose -p <your-stack-name> build --no-cache --pull && docker compose -p <your-stack-name> up -d --force-recreate
+```
+*(In Unraid Compose Manager, stack YAML files live under `/boot/config/plugins/compose.manager/projects/<your-stack-name>/`.)*
+
+### Option C: Clone on Unraid
 1. Clone this repository onto your Unraid server:
    ```bash
    git clone https://github.com/arcygore/pantrycart.git /mnt/user/appdata/pantrycart-src
@@ -42,6 +50,10 @@ Then click **Compose Up**. To update later, run **Update Stack** / `docker compo
 2. Edit the volume path in `docker-compose.yml` to `/mnt/user/appdata/pantrycart:/app/data` and run:
    ```bash
    docker compose up -d --build
+   ```
+   To update later:
+   ```bash
+   git pull && docker compose build --no-cache && docker compose up -d --force-recreate
    ```
 
 3. **Cloudflare Tunnel**: Point a public hostname (e.g., `groceries.yourdomain.com`) to `http://<UNRAID-IP>:8095`.

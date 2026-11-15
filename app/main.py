@@ -1,7 +1,8 @@
+import hashlib
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import STATIC_DIR
@@ -20,6 +21,21 @@ from app.routers import (
     stores_router,
 )
 
+APP_VERSION = "1.4.0"
+
+
+def _compute_build_id() -> str:
+    h = hashlib.sha256()
+    if STATIC_DIR.exists():
+        for path in sorted(STATIC_DIR.rglob("*")):
+            if path.is_file():
+                st = path.stat()
+                h.update(f"{path.relative_to(STATIC_DIR)}:{st.st_size}:{int(st.st_mtime)}".encode())
+    return h.hexdigest()[:8]
+
+
+APP_BUILD_ID = _compute_build_id()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -29,9 +45,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PantryCart — Household Recipes & Smart Grocery Lists",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def add_no_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    content_type = response.headers.get("content-type", "")
+    if (
+        path.startswith("/static/")
+        or path in ("/", "/sw.js", "/manifest.json")
+        or "text/html" in content_type
+        or not path.startswith("/api/")
+    ):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        response.headers["CDN-Cache-Control"] = "no-store"
+        response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
+    return response
+
 
 app.include_router(auth_router.router)
 app.include_router(recipes_router.router)
@@ -48,7 +84,7 @@ app.include_router(kroger_router.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION, "build_id": APP_BUILD_ID}
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -61,11 +97,15 @@ def manifest():
 
 @app.get("/sw.js")
 def service_worker():
-    return FileResponse(str(STATIC_DIR / "sw.js"), media_type="application/javascript")
+    sw_content = (STATIC_DIR / "sw.js").read_text(encoding="utf-8").replace("__BUILD_ID__", APP_BUILD_ID)
+    return Response(content=sw_content, media_type="application/javascript")
 
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
     if full_path.startswith("api/") or full_path == "api":
         raise HTTPException(status_code=404, detail="API endpoint not found")
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("/static/css/styles.css", f"/static/css/styles.css?v={APP_BUILD_ID}")
+    html = html.replace("/static/js/app.js", f"/static/js/app.js?v={APP_BUILD_ID}")
+    return HTMLResponse(content=html)
