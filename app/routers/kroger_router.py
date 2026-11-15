@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from app.auth import get_current_user, utc_now_iso
+from app.auth import get_current_user, require_non_guest, utc_now_iso
 from app.database import get_db
 
 router = APIRouter(prefix="/api/kroger", tags=["kroger"])
@@ -218,7 +218,7 @@ def get_kroger_status(request: Request, user: dict = Depends(get_current_user)):
 
 
 @router.put("/config")
-async def save_kroger_config(payload: KrogerConfigPayload, user: dict = Depends(get_current_user)):
+async def save_kroger_config(payload: KrogerConfigPayload, user: dict = Depends(require_non_guest)):
     now = utc_now_iso()
     with get_db() as conn:
         existing = _get_kroger_config(conn)
@@ -295,7 +295,7 @@ async def search_kroger_locations(zip_code: str, user: dict = Depends(get_curren
 
 
 @router.put("/location")
-def set_kroger_location(payload: KrogerLocationPayload, user: dict = Depends(get_current_user)):
+def set_kroger_location(payload: KrogerLocationPayload, user: dict = Depends(require_non_guest)):
     now = utc_now_iso()
     with get_db() as conn:
         existing = _get_kroger_config(conn)

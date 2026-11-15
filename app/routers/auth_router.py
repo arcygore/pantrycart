@@ -12,6 +12,7 @@ from app.auth import (
     hash_api_key,
     hash_password,
     require_admin,
+    require_non_guest,
     should_use_secure_cookie,
     utc_now_iso,
     verify_password,
@@ -38,6 +39,7 @@ class CreateUserPayload(BaseModel):
     display_name: str = Field(min_length=1, max_length=60)
     password: str = Field(min_length=4, max_length=128)
     is_admin: bool = False
+    is_guest: bool = False
 
 
 class ChangePasswordPayload(BaseModel):
@@ -56,6 +58,7 @@ def _user_dict(row) -> dict:
         "username": row["username"],
         "display_name": row["display_name"],
         "is_admin": bool(row["is_admin"]),
+        "is_guest": bool(row["is_guest"]) if "is_guest" in keys else False,
         "shortcut_verified": bool(row["shortcut_verified"]) if "shortcut_verified" in keys else False,
     }
 
@@ -108,6 +111,7 @@ def initial_setup(payload: SetupPayload, request: Request, response: Response):
             "username": uname,
             "display_name": payload.display_name.strip(),
             "is_admin": True,
+            "is_guest": False,
             "shortcut_verified": False,
         }
     }
@@ -118,7 +122,7 @@ def login(payload: LoginPayload, request: Request, response: Response):
     uname = payload.username.strip().lower()
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, username, display_name, password_hash, is_admin, shortcut_verified FROM users WHERE username = ?",
+            "SELECT id, username, display_name, password_hash, is_admin, is_guest, shortcut_verified FROM users WHERE username = ?",
             (uname,),
         ).fetchone()
     if not row or not verify_password(payload.password, row["password_hash"]):
@@ -144,7 +148,7 @@ def logout(request: Request, response: Response):
 def list_users(user: dict = Depends(get_current_user)):
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, username, display_name, is_admin, shortcut_verified, created_at FROM users ORDER BY id ASC"
+            "SELECT id, username, display_name, is_admin, is_guest, shortcut_verified, created_at FROM users ORDER BY id ASC"
         ).fetchall()
     return [
         {
@@ -158,20 +162,23 @@ def list_users(user: dict = Depends(get_current_user)):
 @router.post("/users")
 def create_user(payload: CreateUserPayload, admin: dict = Depends(require_admin)):
     uname = payload.username.strip().lower()
+    is_guest_flag = 1 if payload.is_guest else 0
+    is_admin_flag = 0 if payload.is_guest else (1 if payload.is_admin else 0)
     with get_db() as conn:
         existing = conn.execute("SELECT id FROM users WHERE username = ?", (uname,)).fetchone()
         if existing:
             raise HTTPException(status_code=400, detail="Username already exists")
         cur = conn.execute(
             """
-            INSERT INTO users (username, display_name, password_hash, is_admin, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO users (username, display_name, password_hash, is_admin, is_guest, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 uname,
                 payload.display_name.strip(),
                 hash_password(payload.password),
-                1 if payload.is_admin else 0,
+                is_admin_flag,
+                is_guest_flag,
                 utc_now_iso(),
             ),
         )
@@ -180,7 +187,8 @@ def create_user(payload: CreateUserPayload, admin: dict = Depends(require_admin)
         "id": uid,
         "username": uname,
         "display_name": payload.display_name.strip(),
-        "is_admin": payload.is_admin,
+        "is_admin": bool(is_admin_flag),
+        "is_guest": bool(is_guest_flag),
     }
 
 
@@ -194,7 +202,7 @@ def delete_user(user_id: int, admin: dict = Depends(require_admin)):
 
 
 @router.post("/change-password")
-def change_password(payload: ChangePasswordPayload, user: dict = Depends(get_current_user)):
+def change_password(payload: ChangePasswordPayload, user: dict = Depends(require_non_guest)):
     with get_db() as conn:
         row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user["id"],)).fetchone()
         if not row or not verify_password(payload.current_password, row["password_hash"]):
@@ -207,7 +215,7 @@ def change_password(payload: ChangePasswordPayload, user: dict = Depends(get_cur
 
 
 @router.get("/api-keys")
-def list_api_keys(user: dict = Depends(get_current_user)):
+def list_api_keys(user: dict = Depends(require_non_guest)):
     with get_db() as conn:
         rows = conn.execute(
             "SELECT id, name, key_prefix, created_at, last_used_at FROM api_keys ORDER BY id DESC"
@@ -216,7 +224,7 @@ def list_api_keys(user: dict = Depends(get_current_user)):
 
 
 @router.post("/api-keys")
-def create_api_key(payload: CreateApiKeyPayload, user: dict = Depends(get_current_user)):
+def create_api_key(payload: CreateApiKeyPayload, user: dict = Depends(require_non_guest)):
     raw_key = "pc_" + secrets.token_urlsafe(28)
     key_h = hash_api_key(raw_key)
     prefix = raw_key[:10] + "..."
@@ -238,7 +246,7 @@ def create_api_key(payload: CreateApiKeyPayload, user: dict = Depends(get_curren
 
 
 @router.delete("/api-keys/{key_id}")
-def delete_api_key(key_id: int, user: dict = Depends(get_current_user)):
+def delete_api_key(key_id: int, user: dict = Depends(require_non_guest)):
     with get_db() as conn:
         conn.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
     return {"ok": True}

@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import get_current_user
+from app.auth import get_current_user, require_non_guest
 from app.database import get_db
 from app.units import normalize_item_key
 
@@ -63,7 +63,7 @@ def list_catalog(q: str = "", user: dict = Depends(get_current_user)):
 
 
 @router.post("")
-def create_catalog_item(payload: CatalogPayload, user: dict = Depends(get_current_user)):
+def create_catalog_item(payload: CatalogPayload, user: dict = Depends(require_non_guest)):
     cname = normalize_item_key(payload.canonical_name)
     if not cname:
         raise HTTPException(status_code=400, detail="Canonical name is required")
@@ -94,7 +94,7 @@ def create_catalog_item(payload: CatalogPayload, user: dict = Depends(get_curren
 
 
 @router.put("/{cat_id}")
-def update_catalog_item(cat_id: int, payload: CatalogPayload, user: dict = Depends(get_current_user)):
+def update_catalog_item(cat_id: int, payload: CatalogPayload, user: dict = Depends(require_non_guest)):
     cname = normalize_item_key(payload.canonical_name)
     with get_db() as conn:
         existing = conn.execute("SELECT id FROM product_catalog WHERE id = ?", (cat_id,)).fetchone()
@@ -124,14 +124,14 @@ def update_catalog_item(cat_id: int, payload: CatalogPayload, user: dict = Depen
 
 
 @router.delete("/{cat_id}")
-def delete_catalog_item(cat_id: int, user: dict = Depends(get_current_user)):
+def delete_catalog_item(cat_id: int, user: dict = Depends(require_non_guest)):
     with get_db() as conn:
         conn.execute("DELETE FROM product_catalog WHERE id = ?", (cat_id,))
     return {"ok": True}
 
 
 @router.post("/upsert-std")
-def upsert_standard_package(payload: UpsertStdPayload, user: dict = Depends(get_current_user)):
+def upsert_standard_package(payload: UpsertStdPayload, user: dict = Depends(require_non_guest)):
     cname = normalize_item_key(payload.item_key)
     with get_db() as conn:
         existing = conn.execute("SELECT * FROM product_catalog WHERE canonical_name = ?", (cname,)).fetchone()

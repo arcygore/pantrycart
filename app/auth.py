@@ -73,7 +73,7 @@ def get_user_from_token(token: str) -> Optional[dict]:
     with get_db() as conn:
         row = conn.execute(
             """
-            SELECT u.id, u.username, u.display_name, u.is_admin, u.shortcut_verified, s.expires_at
+            SELECT u.id, u.username, u.display_name, u.is_admin, u.is_guest, u.shortcut_verified, s.expires_at
             FROM sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.token = ?
@@ -95,6 +95,7 @@ def get_user_from_token(token: str) -> Optional[dict]:
             "username": row["username"],
             "display_name": row["display_name"],
             "is_admin": bool(row["is_admin"]),
+            "is_guest": bool(row["is_guest"]) if "is_guest" in row.keys() else False,
             "shortcut_verified": bool(row["shortcut_verified"]) if "shortcut_verified" in row.keys() else False,
         }
 
@@ -115,6 +116,15 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
+        )
+    return user
+
+
+def require_non_guest(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("is_guest"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Guest accounts cannot delete household items or change settings.",
         )
     return user
 

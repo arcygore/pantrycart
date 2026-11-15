@@ -109,8 +109,9 @@ function renderShell() {
         </nav>
         <div class="sidebar-footer">
           <span style="font-weight: 600;">${esc(state.user.display_name)}</span>
-          <span style="display: inline-flex; align-items: center; gap: 6px;">
+          <span style="display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;">
             <span class="badge">@${esc(state.user.username)}</span>
+            ${state.user.is_guest ? `<span class="badge badge-accent">Guest</span>` : ""}
             <span class="badge" style="opacity: 0.75;" title="App Version">v1.4</span>
           </span>
         </div>
@@ -122,7 +123,7 @@ function renderShell() {
             <img src="/static/icon.svg" alt="PantryCart" />
             <span>PantryCart</span>
           </div>
-          <span class="user-pill">${esc(state.user.display_name)}</span>
+          <span class="user-pill">${esc(state.user.display_name)}${state.user.is_guest ? " (Guest)" : ""}</span>
         </header>
         <div id="view-root"></div>
       </main>

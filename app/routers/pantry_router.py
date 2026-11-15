@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import get_current_user, utc_now_iso
+from app.auth import get_current_user, require_non_guest, utc_now_iso
 from app.database import get_db
 from app.units import match_catalog_item, normalize_item_key
 
@@ -65,7 +65,7 @@ def list_pantry_items(category: str = "", q: str = "", user: dict = Depends(get_
 
 
 @router.post("")
-def create_pantry_item(payload: PantryItemPayload, user: dict = Depends(get_current_user)):
+def create_pantry_item(payload: PantryItemPayload, user: dict = Depends(require_non_guest)):
     now = utc_now_iso()
     with get_db() as conn:
         catalog_rows = [dict(r) for r in conn.execute("SELECT * FROM product_catalog").fetchall()]
@@ -98,7 +98,7 @@ def create_pantry_item(payload: PantryItemPayload, user: dict = Depends(get_curr
 
 
 @router.patch("/{pantry_id}")
-def update_pantry_item(pantry_id: int, payload: PantryUpdatePayload, user: dict = Depends(get_current_user)):
+def update_pantry_item(pantry_id: int, payload: PantryUpdatePayload, user: dict = Depends(require_non_guest)):
     now = utc_now_iso()
     with get_db() as conn:
         row = conn.execute("SELECT * FROM pantry_items WHERE id = ?", (pantry_id,)).fetchone()
@@ -122,7 +122,7 @@ def update_pantry_item(pantry_id: int, payload: PantryUpdatePayload, user: dict 
 
 
 @router.delete("/{pantry_id}")
-def delete_pantry_item(pantry_id: int, user: dict = Depends(get_current_user)):
+def delete_pantry_item(pantry_id: int, user: dict = Depends(require_non_guest)):
     with get_db() as conn:
         conn.execute("DELETE FROM pantry_items WHERE id = ?", (pantry_id,))
     return {"ok": True}

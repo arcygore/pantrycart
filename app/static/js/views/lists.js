@@ -18,6 +18,7 @@ export async function renderListsView(container, state, navigate) {
 
   let activeList = state.activeListId ? await api(`/api/lists/${state.activeListId}`) : null;
   let showChecked = Boolean(state.showChecked);
+  const isGuest = Boolean(state.user?.is_guest);
 
   function render() {
     const uncheckedItems = (activeList?.items || []).filter((i) => !i.checked);
@@ -25,6 +26,13 @@ export async function renderListsView(container, state, navigate) {
     const activeTplCount = templateItems.filter((t) => t.is_active).length;
     const storeDepts = activeList?.store?.departments || [];
     const aisleDepts = new Set(activeList?.store?.aisle_departments || ["Dry Goods"]);
+    const isAisleDept = (deptName) => {
+      const low = (deptName || "").trim().toLowerCase();
+      for (const ad of aisleDepts) {
+        if (ad.toLowerCase() === low) return true;
+      }
+      return false;
+    };
 
     // Seed deptGroups strictly in the store's walking-path order first (FB-10)
     const deptGroups = new Map();
@@ -52,9 +60,11 @@ export async function renderListsView(container, state, navigate) {
           <p class="page-subtitle">Automatically grouped by store department &amp; aisle</p>
         </div>
         <div class="row-wrap">
-          <button class="btn btn-accent btn-sm" id="template-list-btn">Weekly Template (${activeTplCount})</button>
-          <button class="btn btn-sm" id="reorder-lists-btn">Reorder Tabs</button>
-          <button class="btn btn-primary btn-sm" id="new-list-btn">+ New List</button>
+          ${isGuest ? `<span class="badge badge-accent">Guest View</span>` : `
+            <button class="btn btn-accent btn-sm" id="template-list-btn">Weekly Template (${activeTplCount})</button>
+            <button class="btn btn-sm" id="reorder-lists-btn">Reorder Tabs</button>
+            <button class="btn btn-primary btn-sm" id="new-list-btn">+ New List</button>
+          `}
         </div>
       </div>
 
@@ -79,14 +89,17 @@ export async function renderListsView(container, state, navigate) {
                 `).join("")}
               </select>
               <span class="badge">${esc(activeList.list_type === "weekly" ? "Weekly Trip" : activeList.list_type === "store" ? "Dedicated Store" : "One-off")}</span>
+              ${activeList.store?.has_custom_path ? `<span class="badge badge-info" title="Using your custom walking path">Your Path</span>` : ""}
               ${krogerStatus?.location_name ? `<span class="badge badge-info" title="Linked Kroger Store">🏪 ${esc(krogerStatus.location_name)}</span>` : ""}
             </div>
-            <div class="row" style="gap: 6px; flex-wrap: wrap;">
-              <button class="btn btn-sm" id="kroger-aisles-btn" title="Auto-fill Kroger store aisles & prices for unchecked items">🧭 Auto-Map Aisles</button>
-              <button class="btn btn-sm btn-primary" id="kroger-cart-btn" title="Match items and send directly to your Kroger / Pick 'n Save / Fred Meyer cart">🛒 Send to Kroger Cart</button>
-              <button class="btn btn-sm" id="quick-load-template-btn" title="Add active weekly staples to this list">+ Load Weekly Staples</button>
-              ${activeList.list_type === "one_off" ? `<button class="btn btn-sm btn-danger" id="delete-list-btn">Delete List</button>` : ""}
-            </div>
+            ${isGuest ? "" : `
+              <div class="row" style="gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-sm" id="kroger-aisles-btn" title="Auto-fill Kroger store aisles & prices for unchecked items">🧭 Auto-Map Aisles</button>
+                <button class="btn btn-sm btn-primary" id="kroger-cart-btn" title="Match items and send directly to your Kroger / Pick 'n Save / Fred Meyer cart">🛒 Send to Kroger Cart</button>
+                <button class="btn btn-sm" id="quick-load-template-btn" title="Add active weekly staples to this list">+ Load Weekly Staples</button>
+                ${activeList.list_type === "one_off" ? `<button class="btn btn-sm btn-danger" id="delete-list-btn">Delete List</button>` : ""}
+              </div>
+            `}
           </div>
 
           <form id="quick-add-form" class="quick-add-wrap">
@@ -107,7 +120,7 @@ export async function renderListsView(container, state, navigate) {
         ` : `
           <div class="stack-md">
             ${nonEmptyDeptGroups.map(([dept, items], walkIdx) => {
-              const usesAisles = aisleDepts.has(dept);
+              const usesAisles = isAisleDept(dept);
               let lastAisleKey = null;
               return `
                 <div class="dept-card">
@@ -124,7 +137,7 @@ export async function renderListsView(container, state, navigate) {
                         aisleDivider = `<div class="aisle-divider">${esc(aLabel)}</div>`;
                       }
                     }
-                    return `${aisleDivider}${renderItemRow(item, activeList.store)}`;
+                    return `${aisleDivider}${renderItemRow(item, activeList.store, usesAisles)}`;
                   }).join("")}
                 </div>
               `;
@@ -137,13 +150,15 @@ export async function renderListsView(container, state, navigate) {
             <button class="btn btn-sm" id="toggle-checked-btn" type="button">
               ${showChecked ? "Hide" : "Show"} Checked / In Cart (${checkedItems.length})
             </button>
-            <button class="btn btn-sm btn-danger" id="clear-checked-btn" type="button">
-              Clear Checked
-            </button>
+            ${isGuest ? "" : `
+              <button class="btn btn-sm btn-danger" id="clear-checked-btn" type="button">
+                Clear Checked
+              </button>
+            `}
           </div>
           ${showChecked ? `
             <div style="margin-top: 6px;">
-              ${checkedItems.map((item) => renderItemRow(item, activeList.store)).join("")}
+              ${checkedItems.map((item) => renderItemRow(item, activeList.store, isAisleDept(item.department))).join("")}
             </div>
           ` : ""}
         </div>
@@ -155,19 +170,27 @@ export async function renderListsView(container, state, navigate) {
     bindEvents();
   }
 
-  function renderItemRow(item, store) {
+  function renderItemRow(item, store, usesAisles = false) {
     const qtyNum = Number(item.buy_qty) || 1;
     const isMulti = qtyNum > 1;
     const recipeText = item.source_recipes?.length ? `For: ${item.source_recipes.join(", ")}` : "";
-    const aisleText = item.aisle ? `Aisle ${item.aisle}` : (store ? "+ Aisle" : "");
+    const showAislePill = Boolean(store && usesAisles);
+    const aisleText = item.aisle ? `Aisle ${item.aisle}` : "+ Aisle";
+    const canModify = !isGuest || item.added_by === state.user?.id;
     return `
       <div class="item-row ${item.checked ? "checked" : ""}" data-item-id="${item.id}">
         <button class="check-circle ${item.checked ? "checked" : ""}" data-action="toggle" aria-label="Toggle item">
           ${item.checked ? ICONS.check : ""}
         </button>
-        <div class="item-main">
+        <div class="item-main ${canModify ? "editable" : ""}" ${canModify ? `data-action="edit-item" title="Click to edit item"` : ""}>
           <div class="item-title-line">
-            <span class="qty-badge ${isMulti ? "multi" : ""}" title="Quantity">${fmtQty(qtyNum)}×</span>
+            ${canModify ? `
+              <span class="qty-stepper" title="Adjust quantity">
+                <button class="qty-step-btn" data-action="qty-dec" type="button" aria-label="Decrease quantity">−</button>
+                <span class="qty-badge ${isMulti ? "multi" : ""}">${fmtQty(qtyNum)}×</span>
+                <button class="qty-step-btn" data-action="qty-inc" type="button" aria-label="Increase quantity">+</button>
+              </span>
+            ` : `<span class="qty-badge ${isMulti ? "multi" : ""}" title="Quantity">${fmtQty(qtyNum)}×</span>`}
             <span class="item-name">${esc(item.name)}</span>
             ${item.buy_unit ? `<span class="unit-pill">${esc(item.buy_unit)}</span>` : ""}
           </div>
@@ -177,13 +200,17 @@ export async function renderListsView(container, state, navigate) {
             </div>
           ` : ""}
         </div>
-        ${store ? `
-          <button class="aisle-pill ${item.aisle ? "has-aisle" : ""}" data-action="edit-item" title="Set department & aisle for ${esc(store.name)}">
-            ${esc(aisleText)}
-          </button>
-        ` : `
-          <button class="aisle-pill" data-action="edit-item">Edit</button>
-        `}
+        <div class="item-action-btns">
+          ${showAislePill ? (canModify ? `
+            <button class="aisle-pill ${item.aisle ? "has-aisle" : ""}" data-action="edit-item" title="Set department & aisle for ${esc(store.name)}">
+              ${esc(aisleText)}
+            </button>
+          ` : (item.aisle ? `<span class="badge badge-accent">${esc(aisleText)}</span>` : "")) : ""}
+          ${canModify ? `
+            <button class="item-icon-btn" data-action="edit-item" type="button" title="Edit item">✎</button>
+            <button class="item-icon-btn danger" data-action="delete-item" type="button" title="Remove item">✕</button>
+          ` : ""}
+        </div>
       </div>
     `;
   }
@@ -853,7 +880,47 @@ export async function renderListsView(container, state, navigate) {
         }
       });
 
-      rowEl.querySelector('[data-action="edit-item"]')?.addEventListener("click", () => {
+      rowEl.querySelector('[data-action="qty-dec"]')?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const curQty = Number(item.buy_qty) || 1;
+        if (curQty <= 1) {
+          if (!confirm(`Remove "${item.name}" from the list?`)) return;
+          activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, { method: "DELETE" });
+          lists = await api("/api/lists");
+          render();
+          toast(`Removed ${item.name}`);
+          return;
+        }
+        const nextQty = Math.max(1, Math.round((curQty - 1) * 100) / 100);
+        activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, {
+          method: "PATCH",
+          body: { buy_qty: nextQty },
+        });
+        lists = await api("/api/lists");
+        render();
+      });
+
+      rowEl.querySelector('[data-action="qty-inc"]')?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const curQty = Number(item.buy_qty) || 1;
+        const nextQty = Math.round((curQty + 1) * 100) / 100;
+        activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, {
+          method: "PATCH",
+          body: { buy_qty: nextQty },
+        });
+        lists = await api("/api/lists");
+        render();
+      });
+
+      rowEl.querySelector('[data-action="delete-item"]')?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        activeList = await api(`/api/lists/${activeList.id}/items/${itemId}`, { method: "DELETE" });
+        lists = await api("/api/lists");
+        render();
+        toast(`Removed ${item.name}`);
+      });
+
+      rowEl.querySelectorAll('[data-action="edit-item"]').forEach((editTrigger) => editTrigger.addEventListener("click", () => {
         const depts = activeList.store?.departments || [
           "Produce", "Bakery & Deli", "Meat & Seafood", "Dry Goods",
           "Beverages", "Frozen", "Dairy & Eggs", "Household & Personal", "Other",
@@ -891,16 +958,18 @@ export async function renderListsView(container, state, navigate) {
               <label class="field-label">Notes</label>
               <input class="input" name="notes" value="${esc(item.notes)}" placeholder="Brand preference, etc." />
             </div>
-            ${activeList.store ? `
+            ${activeList.store && !isGuest ? `
               <label class="row small">
                 <input type="checkbox" name="save_to_store" checked />
                 <span>Remember this Department &amp; Aisle for <strong>${esc(storeName)}</strong></span>
               </label>
             ` : ""}
-            <label class="row small">
-              <input type="checkbox" name="save_as_std" />
-              <span>Save this Unit/Package label as the default <strong>Standard (Std) Size</strong> for future recipes</span>
-            </label>
+            ${isGuest ? "" : `
+              <label class="row small">
+                <input type="checkbox" name="save_as_std" />
+                <span>Save this Unit/Package label as the default <strong>Standard (Std) Size</strong> for future recipes</span>
+              </label>
+            `}
             <div class="row" style="justify-content: space-between;">
               <button class="btn btn-danger" type="button" id="delete-item-btn">Remove Item</button>
               <button class="btn btn-primary" type="submit">Save Changes</button>
@@ -918,7 +987,7 @@ export async function renderListsView(container, state, navigate) {
           document.getElementById("edit-item-form").addEventListener("submit", async (e) => {
             e.preventDefault();
             const f = e.target;
-            if (f.save_as_std.checked && f.buy_unit.value.trim()) {
+            if (f.save_as_std && f.save_as_std.checked && f.buy_unit.value.trim()) {
               const numMatch = f.buy_unit.value.match(/(\d+(?:\.\d+)?)\s*(fl_oz|oz|lb|g|ml|count|clove|bunch|head)/i);
               await api("/api/catalog/upsert-std", {
                 method: "POST",
@@ -950,7 +1019,7 @@ export async function renderListsView(container, state, navigate) {
             toast("Item updated");
           });
         });
-      });
+      }));
     });
   }
 

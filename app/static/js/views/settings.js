@@ -3,12 +3,13 @@ import { isShortcutReady, openShortcutSetupModal } from "../nutrition_ui.js";
 import { closeModal, esc, openModal, toast } from "../utils.js";
 
 export async function renderSettingsView(container, state, onLogout) {
+  const isGuest = Boolean(state.user?.is_guest);
   let tab = state.settingsTab || "household";
-  let users = await api("/api/auth/users");
-  let catalog = await api("/api/catalog");
-  let apiKeys = await api("/api/auth/api-keys");
-  let stores = await api("/api/stores");
-  let krogerStatus = await api("/api/kroger/status").catch(() => ({
+  let users = isGuest ? [] : await api("/api/auth/users");
+  let catalog = isGuest ? [] : await api("/api/catalog");
+  let apiKeys = isGuest ? [] : await api("/api/auth/api-keys");
+  let stores = isGuest ? [] : await api("/api/stores");
+  let krogerStatus = isGuest ? null : await api("/api/kroger/status").catch(() => ({
     configured: false,
     client_id: "",
     has_client_secret: false,
@@ -25,6 +26,30 @@ export async function renderSettingsView(container, state, onLogout) {
 
   function render() {
     const origin = window.location.origin;
+
+    if (isGuest) {
+      container.innerHTML = `
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">Account</h1>
+            <p class="page-subtitle">Signed in with a Guest account</p>
+          </div>
+          <button class="btn btn-sm" id="logout-btn">Sign Out (${esc(state.user.display_name)})</button>
+        </div>
+        <div class="card stack-md" style="max-width: 580px;">
+          <div class="row" style="gap: 8px; align-items: center;">
+            <strong style="font-size: 1.05rem;">${esc(state.user.display_name)}</strong>
+            <span class="badge">@${esc(state.user.username)}</span>
+            <span class="badge badge-accent">Guest Account</span>
+          </div>
+          <p class="small muted" style="margin: 0;">
+            Guest accounts can add items to shopping lists, check off items, customize items you added yourself, request low pantry items onto a list, and set your own personal store walking path. Household settings, integrations, and deleting shared household data are restricted.
+          </p>
+        </div>
+      `;
+      bindEvents();
+      return;
+    }
 
     container.innerHTML = `
       <div class="page-header">
@@ -63,7 +88,11 @@ export async function renderSettingsView(container, state, onLogout) {
             ${users.map((u) => `
               <div class="row" style="justify-content: space-between; padding: 9px 10px; background: var(--bg); border-radius: 9px;">
                 <div>
-                  <div style="font-weight: 700;">${esc(u.display_name)} ${u.is_admin ? `<span class="badge badge-primary">Admin</span>` : ""}</div>
+                  <div style="font-weight: 700;">
+                    ${esc(u.display_name)}
+                    ${u.is_admin ? `<span class="badge badge-primary">Admin</span>` : ""}
+                    ${u.is_guest ? `<span class="badge badge-accent">Guest</span>` : ""}
+                  </div>
                   <div class="small muted">@${esc(u.username)}</div>
                 </div>
                 ${(state.user.is_admin && u.id !== state.user.id) ? `
@@ -330,7 +359,7 @@ sensor:
     });
 
     document.getElementById("add-member-btn")?.addEventListener("click", () => {
-      openModal("Add Household Member", `
+      openModal("Add Household Member or Guest", `
         <form id="add-user-form" class="stack-md">
           <div>
             <label class="field-label">Display Name</label>
@@ -344,16 +373,21 @@ sensor:
             <label class="field-label">Password</label>
             <input class="input" name="password" type="password" minlength="4" required />
           </div>
-          <label class="row small">
-            <input type="checkbox" name="is_admin" checked />
-            <span>Admin privileges (can manage household accounts)</span>
-          </label>
+          <div>
+            <label class="field-label">Account Role</label>
+            <select class="select" name="role">
+              <option value="member">Household Member (Full Access)</option>
+              <option value="admin">Admin (Full Access + Manage Accounts)</option>
+              <option value="guest">Guest (Add/check items &amp; personal walking path only)</option>
+            </select>
+          </div>
           <button class="btn btn-primary" type="submit">Create Account</button>
         </form>
       `, (close) => {
         document.getElementById("add-user-form").addEventListener("submit", async (e) => {
           e.preventDefault();
           const f = e.target;
+          const role = f.role.value;
           try {
             await api("/api/auth/users", {
               method: "POST",
@@ -361,13 +395,14 @@ sensor:
                 display_name: f.display_name.value.trim(),
                 username: f.username.value.trim(),
                 password: f.password.value,
-                is_admin: f.is_admin.checked,
+                is_admin: role === "admin",
+                is_guest: role === "guest",
               },
             });
             users = await api("/api/auth/users");
             close();
             render();
-            toast("Household member added!");
+            toast("Account added!");
           } catch (err) {
             toast(err.message, true);
           }

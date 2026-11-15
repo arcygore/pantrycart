@@ -7,8 +7,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from app.auth import get_current_user, utc_now_iso
+from app.auth import require_non_guest, utc_now_iso
 from app.database import get_db
+from app.routers.nutrition_router import compute_recipe_macros
 from app.scraper import scrape_recipe_url
 from app.units import match_catalog_item, normalize_item_key, parse_ingredient_line
 
@@ -138,12 +139,43 @@ def _insert_recipe_dict(conn, r: dict[str, Any], catalog_rows: list[dict], user_
         ]
         ing_lines = [x for x in ing_lines if x]
 
+    parsed_ings: list[dict[str, Any]] = []
+    for line in ing_lines:
+        parsed = parse_ingredient_line(line)
+        cat = match_catalog_item(parsed["name"], catalog_rows)
+        parsed_ings.append(
+            {
+                "raw_text": line,
+                "quantity": parsed["quantity"],
+                "unit": parsed["unit"],
+                "name": parsed["name"],
+                "prep_notes": parsed["prep_notes"],
+                "catalog_id": cat["id"] if cat else None,
+            }
+        )
+
+    cal = r.get("calories_per_serving")
+    prot = r.get("protein_g")
+    carbs = r.get("carbs_g")
+    fat = r.get("fat_g")
+    fiber = r.get("fiber_g")
+    if parsed_ings and cal is None:
+        est = compute_recipe_macros(parsed_ings, servings)
+        cal = est["calories_per_serving"]
+        prot = est["protein_g"] if prot is None else prot
+        carbs = est["carbs_g"] if carbs is None else carbs
+        fat = est["fat_g"] if fat is None else fat
+        fiber = est["fiber_g"] if fiber is None else fiber
+
     cur = conn.execute(
         """
         INSERT INTO recipes (
             title, description, servings, prep_minutes, cook_minutes,
-            source_url, image_url, tags_json, steps_json, notes, created_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_url, image_url, tags_json, steps_json, notes,
+            calories_per_serving, protein_g, carbs_g, fat_g, fiber_g,
+            original_ingredients_json, original_steps_json,
+            created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title,
@@ -156,15 +188,20 @@ def _insert_recipe_dict(conn, r: dict[str, Any], catalog_rows: list[dict], user_
             json.dumps(tags),
             json.dumps(steps),
             (r.get("notes") or "").strip(),
+            cal,
+            prot,
+            carbs,
+            fat,
+            fiber,
+            json.dumps([p["raw_text"] for p in parsed_ings]),
+            json.dumps(steps),
             user_id,
             now,
             now,
         ),
     )
     rid = cur.lastrowid
-    for idx, line in enumerate(ing_lines):
-        parsed = parse_ingredient_line(line)
-        cat = match_catalog_item(parsed["name"], catalog_rows)
+    for idx, parsed in enumerate(parsed_ings):
         conn.execute(
             """
             INSERT INTO recipe_ingredients (
@@ -174,19 +211,19 @@ def _insert_recipe_dict(conn, r: dict[str, Any], catalog_rows: list[dict], user_
             (
                 rid,
                 idx,
-                line,
+                parsed["raw_text"],
                 parsed["quantity"],
                 parsed["unit"],
                 parsed["name"],
                 parsed["prep_notes"],
-                cat["id"] if cat else None,
+                parsed["catalog_id"],
             ),
         )
     return True
 
 
 @router.post("/recipes")
-async def bulk_import_recipes(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def bulk_import_recipes(file: UploadFile = File(...), user: dict = Depends(require_non_guest)):
     content = await file.read()
     fname = (file.filename or "").lower()
     now = utc_now_iso()
@@ -236,7 +273,7 @@ async def bulk_import_recipes(file: UploadFile = File(...), user: dict = Depends
 
 
 @router.post("/recipes-urls")
-async def bulk_import_recipe_urls(payload: BulkUrlsPayload, user: dict = Depends(get_current_user)):
+async def bulk_import_recipe_urls(payload: BulkUrlsPayload, user: dict = Depends(require_non_guest)):
     now = utc_now_iso()
     imported = 0
     errors = []
@@ -262,7 +299,7 @@ async def bulk_import_recipe_urls(payload: BulkUrlsPayload, user: dict = Depends
 async def bulk_import_store_locations(
     store_id: int,
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_non_guest),
 ):
     content = await file.read()
     fname = (file.filename or "").lower()
@@ -301,7 +338,7 @@ async def bulk_import_store_locations(
 
 
 @router.post("/pantry")
-async def bulk_import_pantry(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def bulk_import_pantry(file: UploadFile = File(...), user: dict = Depends(require_non_guest)):
     content = await file.read()
     fname = (file.filename or "").lower()
     if not fname.endswith((".csv", ".xlsx")):

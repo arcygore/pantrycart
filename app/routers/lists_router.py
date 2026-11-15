@@ -6,8 +6,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import get_current_user, utc_now_iso
+from app.auth import get_current_user, require_non_guest, utc_now_iso
 from app.database import GROCERY_DEPARTMENTS, get_db
+from app.routers.stores_router import get_effective_store_departments
 from app.units import match_catalog_item, normalize_item_key, parse_ingredient_line
 
 router = APIRouter(prefix="/api/lists", tags=["lists"])
@@ -130,15 +131,16 @@ def resolve_store_department(raw_dept: str, store_departments: list[str]) -> str
     return "Other" if "Other" in clean_depts else clean_depts[-1]
 
 
-def build_list_response(conn, list_row) -> dict:
+def build_list_response(conn, list_row, user_id: Optional[int] = None) -> dict:
     store = None
     store_depts = list(GROCERY_DEPARTMENTS)
     aisle_depts = ["Dry Goods", "Beverages", "Household & Personal"]
     if list_row["store_id"]:
         srow = conn.execute("SELECT * FROM stores WHERE id = ?", (list_row["store_id"],)).fetchone()
         if srow:
-            raw_depts = json.loads(srow["departments_json"] or "[]") or list(GROCERY_DEPARTMENTS)
-            store_depts = [html.unescape(d).strip() for d in raw_depts if d and d.strip()]
+            store_depts, _, has_custom_path = get_effective_store_departments(conn, srow, user_id)
+            if not store_depts:
+                store_depts = list(GROCERY_DEPARTMENTS)
             raw_adepts = json.loads(srow["aisle_departments_json"] or "[]")
             aisle_depts = [html.unescape(d).strip() for d in raw_adepts if d and d.strip()]
             store = {
@@ -148,6 +150,7 @@ def build_list_response(conn, list_row) -> dict:
                 "chain": srow["chain"],
                 "departments": store_depts,
                 "aisle_departments": aisle_depts,
+                "has_custom_path": has_custom_path,
             }
 
     loc_map = {}
@@ -203,6 +206,7 @@ def build_list_response(conn, list_row) -> dict:
                 "checked": bool(r["checked"]),
                 "checked_by_name": r["checked_by_name"] or "",
                 "checked_at": r["checked_at"],
+                "added_by": r["added_by"],
                 "added_by_name": r["added_by_name"] or "",
                 "created_at": r["created_at"],
             }
@@ -302,7 +306,7 @@ def get_template_items(user: dict = Depends(get_current_user)):
 
 
 @router.post("/template/items")
-def add_template_item(payload: TemplateItemPayload, user: dict = Depends(get_current_user)):
+def add_template_item(payload: TemplateItemPayload, user: dict = Depends(require_non_guest)):
     now = utc_now_iso()
     with get_db() as conn:
         catalog_rows = [dict(r) for r in conn.execute("SELECT * FROM product_catalog").fetchall()]
@@ -333,7 +337,7 @@ def add_template_item(payload: TemplateItemPayload, user: dict = Depends(get_cur
 
 
 @router.patch("/template/items/{tpl_id}")
-def update_template_item(tpl_id: int, payload: TemplateItemUpdatePayload, user: dict = Depends(get_current_user)):
+def update_template_item(tpl_id: int, payload: TemplateItemUpdatePayload, user: dict = Depends(require_non_guest)):
     with get_db() as conn:
         row = conn.execute("SELECT * FROM weekly_template_items WHERE id = ?", (tpl_id,)).fetchone()
         if not row:
@@ -358,7 +362,7 @@ def update_template_item(tpl_id: int, payload: TemplateItemUpdatePayload, user: 
 
 
 @router.delete("/template/items/{tpl_id}")
-def delete_template_item(tpl_id: int, user: dict = Depends(get_current_user)):
+def delete_template_item(tpl_id: int, user: dict = Depends(require_non_guest)):
     with get_db() as conn:
         conn.execute("DELETE FROM weekly_template_items WHERE id = ?", (tpl_id,))
     return {"ok": True}
@@ -435,7 +439,7 @@ def create_shopping_list(payload: CreateListPayload, user: dict = Depends(get_cu
         if payload.position is not None:
             _reposition_list(conn, lid, payload.position)
         row = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (lid,)).fetchone()
-        return build_list_response(conn, row)
+        return build_list_response(conn, row, user["id"])
 
 
 @router.get("/{list_id}")
@@ -444,7 +448,7 @@ def get_shopping_list(list_id: int, user: dict = Depends(get_current_user)):
         row = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Shopping list not found")
-        return build_list_response(conn, row)
+        return build_list_response(conn, row, user["id"])
 
 
 @router.patch("/{list_id}")
@@ -469,7 +473,7 @@ def update_shopping_list(list_id: int, payload: UpdateListPayload, user: dict = 
         if payload.position is not None:
             _reposition_list(conn, list_id, payload.position)
         updated = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
-        return build_list_response(conn, updated)
+        return build_list_response(conn, updated, user["id"])
 
 
 @router.post("/{list_id}/apply-template")
@@ -484,7 +488,7 @@ def apply_weekly_template(
             raise HTTPException(status_code=404, detail="Shopping list not found")
         if payload.item_ids is not None:
             if not payload.item_ids:
-                return build_list_response(conn, lst)
+                return build_list_response(conn, lst, user["id"])
             placeholders = ",".join("?" for _ in payload.item_ids)
             tpl_rows = conn.execute(
                 f"SELECT * FROM weekly_template_items WHERE id IN ({placeholders}) ORDER BY sort_order ASC, id ASC",
@@ -510,11 +514,11 @@ def apply_weekly_template(
                 user["id"],
             )
         updated = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
-        return build_list_response(conn, updated)
+        return build_list_response(conn, updated, user["id"])
 
 
 @router.delete("/{list_id}")
-def delete_shopping_list(list_id: int, user: dict = Depends(get_current_user)):
+def delete_shopping_list(list_id: int, user: dict = Depends(require_non_guest)):
     with get_db() as conn:
         conn.execute("DELETE FROM shopping_lists WHERE id = ?", (list_id,))
     return {"ok": True}
@@ -620,7 +624,7 @@ def add_item_to_list_internal(conn, list_id: int, payload: AddListItemPayload, u
 
     conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE id = ?", (now, list_id))
     updated_list = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
-    return build_list_response(conn, updated_list)
+    return build_list_response(conn, updated_list, user_id)
 
 
 @router.post("/{list_id}/items")
@@ -645,6 +649,15 @@ def update_list_item(
         ).fetchone()
         if not lst or not item:
             raise HTTPException(status_code=404, detail="Item not found")
+
+        has_non_check_edits = any(
+            f in payload.model_fields_set for f in ("name", "buy_qty", "buy_unit", "department", "aisle", "notes")
+        )
+        if user.get("is_guest") and item["added_by"] != user["id"] and (payload.checked is None or has_non_check_edits):
+            raise HTTPException(
+                status_code=403,
+                detail="Guest accounts can only edit items they added themselves.",
+            )
 
         name = payload.name.strip() if payload.name is not None else item["name"]
         ikey = normalize_item_key(name) if payload.name is not None else item["item_key"]
@@ -676,8 +689,13 @@ def update_list_item(
             (name, ikey, buy_qty, buy_unit, dept, aisle, notes, checked, checked_by, checked_at, item_id),
         )
 
-        # Persist department & aisle for this exact store!
-        if lst["store_id"] and payload.save_to_store and (payload.department is not None or payload.aisle is not None):
+        # Persist department & aisle for this exact store (non-guest household members only)
+        if (
+            lst["store_id"]
+            and payload.save_to_store
+            and not user.get("is_guest")
+            and (payload.department is not None or payload.aisle is not None)
+        ):
             eff_dept = dept or "Dry Goods"
             conn.execute(
                 """
@@ -694,23 +712,34 @@ def update_list_item(
 
         conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE id = ?", (now, list_id))
         updated_list = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
-        return build_list_response(conn, updated_list)
+        return build_list_response(conn, updated_list, user["id"])
 
 
 @router.delete("/{list_id}/items/{item_id}")
 def delete_list_item(list_id: int, item_id: int, user: dict = Depends(get_current_user)):
     now = utc_now_iso()
     with get_db() as conn:
+        item = conn.execute(
+            "SELECT * FROM shopping_list_items WHERE id = ? AND list_id = ?",
+            (item_id, list_id),
+        ).fetchone()
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+        if user.get("is_guest") and item["added_by"] != user["id"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Guest accounts can only remove items they added themselves.",
+            )
         conn.execute("DELETE FROM shopping_list_items WHERE id = ? AND list_id = ?", (item_id, list_id))
         conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE id = ?", (now, list_id))
         updated_list = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
         if not updated_list:
             raise HTTPException(status_code=404, detail="List not found")
-        return build_list_response(conn, updated_list)
+        return build_list_response(conn, updated_list, user["id"])
 
 
 @router.post("/{list_id}/clear-checked")
-def clear_checked_items(list_id: int, user: dict = Depends(get_current_user)):
+def clear_checked_items(list_id: int, user: dict = Depends(require_non_guest)):
     now = utc_now_iso()
     with get_db() as conn:
         conn.execute("DELETE FROM shopping_list_items WHERE list_id = ? AND checked = 1", (list_id,))
@@ -718,4 +747,4 @@ def clear_checked_items(list_id: int, user: dict = Depends(get_current_user)):
         updated_list = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
         if not updated_list:
             raise HTTPException(status_code=404, detail="List not found")
-        return build_list_response(conn, updated_list)
+        return build_list_response(conn, updated_list, user["id"])

@@ -8,6 +8,7 @@ export async function renderStoresView(container, state) {
   }
   let locations = state.activeStoreId ? await api(`/api/stores/${state.activeStoreId}/locations`) : [];
   let locSearch = "";
+  const isGuest = Boolean(state.user?.is_guest);
 
   function render() {
     const activeStore = stores.find((s) => s.id === state.activeStoreId);
@@ -26,11 +27,13 @@ export async function renderStoresView(container, state) {
       <div class="page-header">
         <div>
           <h1 class="page-title">Stores &amp; Aisle Maps</h1>
-          <p class="page-subtitle">Configure department walking order, top bar order &amp; exact aisle numbers per store</p>
+          <p class="page-subtitle">Shared stores &amp; aisle maps with your own personal department walking order</p>
         </div>
         <div class="row-wrap">
-          <button class="btn btn-sm" id="reorder-stores-btn">Reorder Top Bar</button>
-          <button class="btn btn-primary btn-sm" id="add-store-btn">+ Add Custom Store</button>
+          ${isGuest ? `<span class="badge badge-accent">Guest View (Personal Walking Path Editable)</span>` : `
+            <button class="btn btn-sm" id="reorder-stores-btn">Reorder Top Bar</button>
+            <button class="btn btn-primary btn-sm" id="add-store-btn">+ Add Custom Store</button>
+          `}
         </div>
       </div>
 
@@ -45,17 +48,30 @@ export async function renderStoresView(container, state) {
       ${activeStore ? `
         <div class="grid-2" style="align-items: start;">
           <div class="card stack-md">
-            <div class="row" style="justify-content: space-between;">
+            <div class="row-wrap" style="justify-content: space-between; gap: 8px;">
               <div>
                 <h2 style="margin: 0; font-size: 1.08rem;">${esc(activeStore.name)} Layout</h2>
-                <div class="row" style="gap: 6px; margin-top: 2px;">
+                <div class="row-wrap" style="gap: 6px; margin-top: 4px;">
                   <span class="badge">${esc(activeStore.store_type)}</span>
                   <span class="badge badge-primary">Top Bar Pos #${activeIndex + 1}</span>
+                  ${activeStore.has_custom_path
+                    ? `<span class="badge badge-info">Your Custom Path</span>`
+                    : `<span class="badge">Shared Default Order</span>`}
                 </div>
               </div>
-              <button class="btn btn-sm" id="edit-store-btn">Edit Store &amp; Position</button>
+              ${isGuest ? "" : `<button class="btn btn-sm" id="edit-store-btn">Edit Store &amp; Position</button>`}
             </div>
-            <p class="small muted" style="margin: 0;">Walking order from top to bottom. Use ↑ / ↓ to adjust your walking path anytime, or click Edit Store to add/rename sections.</p>
+            <div class="row-wrap" style="justify-content: space-between; gap: 8px;">
+              <p class="small muted" style="margin: 0; flex: 1; min-width: 180px;">
+                Your personal walking order (top to bottom). Other household members keep their own path.
+              </p>
+              <div class="row" style="gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-sm" id="reverse-path-btn" type="button" title="Reverse walking direction (Clockwise ↔ Counter-Clockwise)">⇄ Reverse My Path</button>
+                ${activeStore.has_custom_path ? `
+                  <button class="btn btn-sm" id="reset-path-btn" type="button" title="Reset your walking order to the shared household default">Reset to Shared Default</button>
+                ` : ""}
+              </div>
+            </div>
             <div class="stack-sm">
               ${activeStore.departments.map((d, idx) => {
                 const usesAisle = activeStore.aisle_departments.includes(d);
@@ -64,8 +80,8 @@ export async function renderStoresView(container, state) {
                     <span><strong>${idx + 1}.</strong> ${esc(d)}</span>
                     <div class="row" style="gap: 6px;">
                       ${usesAisle ? `<span class="badge badge-accent">Sorted by Aisle</span>` : `<span class="badge">Section</span>`}
-                      <button class="btn btn-sm move-dept-up" data-idx="${idx}" ${idx === 0 ? "disabled" : ""} title="Move department earlier in walking path">↑</button>
-                      <button class="btn btn-sm move-dept-down" data-idx="${idx}" ${idx === activeStore.departments.length - 1 ? "disabled" : ""} title="Move department later in walking path">↓</button>
+                      <button class="btn btn-sm move-dept-up" data-idx="${idx}" ${idx === 0 ? "disabled" : ""} title="Move department earlier in your walking path">↑</button>
+                      <button class="btn btn-sm move-dept-down" data-idx="${idx}" ${idx === activeStore.departments.length - 1 ? "disabled" : ""} title="Move department later in your walking path">↓</button>
                     </div>
                   </div>
                 `;
@@ -76,10 +92,12 @@ export async function renderStoresView(container, state) {
           <div class="card stack-md">
             <div class="row-wrap" style="justify-content: space-between;">
               <h2 style="margin: 0; font-size: 1.08rem;">Item Aisle Map (${locations.length})</h2>
-              <div class="row">
-                <button class="btn btn-sm" id="bulk-import-locs-btn">Bulk Import</button>
-                <button class="btn btn-primary btn-sm" id="add-loc-btn">+ Map Item</button>
-              </div>
+              ${isGuest ? `<span class="badge">Shared Read-Only</span>` : `
+                <div class="row">
+                  <button class="btn btn-sm" id="bulk-import-locs-btn">Bulk Import</button>
+                  <button class="btn btn-primary btn-sm" id="add-loc-btn">+ Map Item</button>
+                </div>
+              `}
             </div>
             <input class="input" id="loc-search" value="${esc(locSearch)}" placeholder="Filter mapped items or aisles..." />
             ${filteredLocs.length === 0 ? `
@@ -96,8 +114,10 @@ export async function renderStoresView(container, state) {
                     </div>
                     <div class="row" style="gap: 6px;">
                       <span class="aisle-pill ${loc.aisle ? "has-aisle" : ""}">${loc.aisle ? `Aisle ${esc(loc.aisle)}` : "No aisle"}</span>
-                      <button class="btn btn-sm edit-loc-btn" data-id="${loc.id}">Edit</button>
-                      <button class="btn btn-sm btn-danger del-loc-btn" data-id="${loc.id}">✕</button>
+                      ${isGuest ? "" : `
+                        <button class="btn btn-sm edit-loc-btn" data-id="${loc.id}">Edit</button>
+                        <button class="btn btn-sm btn-danger del-loc-btn" data-id="${loc.id}">✕</button>
+                      `}
                     </div>
                   </div>
                 `).join("")}
@@ -126,13 +146,13 @@ export async function renderStoresView(container, state) {
         const i = Number(btn.dataset.idx);
         const depts = [...activeStore.departments];
         [depts[i - 1], depts[i]] = [depts[i], depts[i - 1]];
-        await api(`/api/stores/${activeStore.id}`, {
+        await api(`/api/stores/${activeStore.id}/walking-path`, {
           method: "PUT",
           body: { departments: depts },
         });
         stores = await api("/api/stores");
         render();
-        toast("Walking path updated!");
+        toast("Your personal walking path updated!");
       });
     });
 
@@ -142,14 +162,35 @@ export async function renderStoresView(container, state) {
         const i = Number(btn.dataset.idx);
         const depts = [...activeStore.departments];
         [depts[i + 1], depts[i]] = [depts[i], depts[i + 1]];
-        await api(`/api/stores/${activeStore.id}`, {
+        await api(`/api/stores/${activeStore.id}/walking-path`, {
           method: "PUT",
           body: { departments: depts },
         });
         stores = await api("/api/stores");
         render();
-        toast("Walking path updated!");
+        toast("Your personal walking path updated!");
       });
+    });
+
+    document.getElementById("reverse-path-btn")?.addEventListener("click", async () => {
+      if (!activeStore) return;
+      await api(`/api/stores/${activeStore.id}/walking-path`, {
+        method: "PUT",
+        body: { reverse: true },
+      });
+      stores = await api("/api/stores");
+      render();
+      toast("Reversed your walking path direction!");
+    });
+
+    document.getElementById("reset-path-btn")?.addEventListener("click", async () => {
+      if (!activeStore) return;
+      await api(`/api/stores/${activeStore.id}/walking-path`, {
+        method: "DELETE",
+      });
+      stores = await api("/api/stores");
+      render();
+      toast("Reset to shared household store walking order");
     });
 
     document.getElementById("loc-search")?.addEventListener("input", (e) => {

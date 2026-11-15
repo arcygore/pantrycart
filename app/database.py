@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     is_admin INTEGER NOT NULL DEFAULT 0,
+    is_guest INTEGER NOT NULL DEFAULT 0,
     shortcut_verified INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
@@ -68,6 +69,14 @@ CREATE TABLE IF NOT EXISTS stores (
     is_default INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_store_paths (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    departments_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, store_id)
 );
 
 CREATE TABLE IF NOT EXISTS product_catalog (
@@ -112,6 +121,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     fat_g REAL,
     fiber_g REAL,
     custom_portions REAL,
+    original_ingredients_json TEXT NOT NULL DEFAULT '[]',
+    original_steps_json TEXT NOT NULL DEFAULT '[]',
     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -567,6 +578,20 @@ def _run_migrations(conn: sqlite3.Connection):
     user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "shortcut_verified" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN shortcut_verified INTEGER NOT NULL DEFAULT 0")
+    if "is_guest" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_store_paths (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+            departments_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, store_id)
+        )
+        """
+    )
 
     recipe_cols = {r["name"] for r in conn.execute("PRAGMA table_info(recipes)").fetchall()}
     for col_name, col_type in [
@@ -576,9 +601,46 @@ def _run_migrations(conn: sqlite3.Connection):
         ("fat_g", "REAL"),
         ("fiber_g", "REAL"),
         ("custom_portions", "REAL"),
+        ("original_ingredients_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("original_steps_json", "TEXT NOT NULL DEFAULT '[]'"),
     ]:
         if col_name not in recipe_cols:
             conn.execute(f"ALTER TABLE recipes ADD COLUMN {col_name} {col_type}")
+
+    # Backfill baseline original_ingredients_json and original_steps_json for existing recipes
+    recipes_to_backfill = conn.execute(
+        """
+        SELECT id, steps_json, original_ingredients_json, original_steps_json
+        FROM recipes
+        WHERE original_ingredients_json IS NULL
+           OR original_ingredients_json = ''
+           OR original_ingredients_json = '[]'
+           OR original_steps_json IS NULL
+           OR original_steps_json = ''
+           OR original_steps_json = '[]'
+        """
+    ).fetchall()
+    for r in recipes_to_backfill:
+        orig_ings_json = r["original_ingredients_json"] or "[]"
+        if orig_ings_json in ("", "[]"):
+            ing_rows = conn.execute(
+                """
+                SELECT raw_text, quantity, unit, name, prep_notes
+                FROM recipe_ingredients
+                WHERE recipe_id = ?
+                ORDER BY sort_order ASC, id ASC
+                """,
+                (r["id"],),
+            ).fetchall()
+            if ing_rows:
+                orig_ings_json = json.dumps([dict(x) for x in ing_rows])
+        orig_steps_json = r["original_steps_json"] or "[]"
+        if orig_steps_json in ("", "[]") and r["steps_json"] not in (None, "", "[]"):
+            orig_steps_json = r["steps_json"]
+        conn.execute(
+            "UPDATE recipes SET original_ingredients_json = ?, original_steps_json = ? WHERE id = ?",
+            (orig_ings_json, orig_steps_json, r["id"]),
+        )
 
     slot_cols = {r["name"] for r in conn.execute("PRAGMA table_info(meal_calendar_slots)").fetchall()}
     for col_name, col_type in [
@@ -796,14 +858,27 @@ def _seed_sample_recipes(conn: sqlite3.Connection, now: str):
 
     catalog_rows = [dict(r) for r in conn.execute("SELECT * FROM product_catalog").fetchall()]
     for r in samples:
+        parsed_ings = []
+        for line in r["ingredients"]:
+            p = parse_ingredient_line(line)
+            parsed_ings.append(
+                {
+                    "raw_text": line,
+                    "quantity": p["quantity"],
+                    "unit": p["unit"],
+                    "name": p["name"],
+                    "prep_notes": p["prep_notes"],
+                }
+            )
         cur = conn.execute(
             """
             INSERT INTO recipes (
                 title, description, servings, prep_minutes, cook_minutes,
                 source_url, image_url, tags_json, steps_json, notes,
                 calories_per_serving, protein_g, carbs_g, fat_g, fiber_g,
+                original_ingredients_json, original_steps_json,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, '', '', ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, '', '', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 r["title"],
@@ -818,6 +893,8 @@ def _seed_sample_recipes(conn: sqlite3.Connection, now: str):
                 r.get("carbs_g"),
                 r.get("fat_g"),
                 r.get("fiber_g"),
+                json.dumps(parsed_ings),
+                json.dumps(r["steps"]),
                 now,
                 now,
             ),

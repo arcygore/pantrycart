@@ -1178,4 +1178,147 @@ a {
   border-bottom: none;
 }
 
+/* Shopping List Inline Controls (FB-15) */
+.qty-stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-alt);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.qty-step-btn {
+  border: none;
+  background: transparent;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 0.92rem;
+  line-height: 1;
+  color: var(--text);
+  padding: 0;
+}
+
+.qty-step-btn:hover {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.qty-stepper .qty-badge {
+  border-radius: 0;
+  background: transparent;
+  padding: 0 5px;
+  font-size: 0.82rem;
+}
+
+.item-main.editable {
+  cursor: pointer;
+}
+
+.item-main.editable:hover .item-name {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: rgba(45, 106, 79, 0.35);
+}
+
+.item-action-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.item-icon-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  border-radius: 7px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 0;
+}
+
+.item-icon-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.item-icon-btn.danger:hover {
+  border-color: #fca5a5;
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+/* Recipe Customization Diff (FB-24) */
+.diff-banner {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.diff-badge-added {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: #d8f3dc;
+  color: #1b4332;
+}
+
+.diff-badge-mod {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.diff-badge-removed {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.diff-was-note {
+  font-size: 0.78rem;
+  color: #92400e;
+  margin-top: 2px;
+}
+
+.removed-block {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fef2f2;
+  border: 1px dashed #fca5a5;
+  border-radius: 9px;
+}
+
 

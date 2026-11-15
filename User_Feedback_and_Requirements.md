@@ -115,6 +115,56 @@
       - **Step 1 (Shortcut Not Verified — `shortcut_verified = false`)**: All **🔒 Log Meals** buttons on **This Week** day cards and meal slots remain visibly locked/grayed out (`.btn-locked`) while exposing **Step 1: Setup & Verify Shortcut** to guide creating/downloading the `PantryCart Log Macros` iOS Shortcut (`shortcuts://create-shortcut` + `/api/nutrition/ios-shortcut` template) and running an `x-callback-url` test (`#planner?shortcut_verified=1`) or confirming availability.
       - **Step 2 (Shortcut Verified — `shortcut_verified = true`)**: All **📲 Log Meals** buttons unlock into active buttons (`.btn-log-ready` / `.btn-log-done` `✓ Logged`) so you can log an individual meal or an entire day's planned meals (filtered by **Everyone** or a specific household member like `Me` / `Wife`) directly to Apple Health / Shortcuts & mark them logged in PantryCart.
 
+- [ ] **FB-15 (DO): Make shopping list items clearly editable with inline quantity adjustment and delete without checking them off first**
+  - **Agent Resolution Note:**
+    - Updated `app/static/js/views/lists.js` (`renderItemRow` & `bindEvents`) and `app/static/css/styles.css` (`.qty-stepper`, `.qty-step-btn`, `.item-action-btns`, `.item-icon-btn`, `.item-main.editable`):
+      - Every editable list item now shows an inline **`−` / `+` quantity stepper** around the quantity badge so you can increment or decrement `buy_qty` in one tap (or confirm removal when stepping down from `1×`).
+      - Item titles are clickable to open the full **Edit Item** modal, alongside explicit **`✎` Edit** and **`✕` Remove** buttons on every row so items can be adjusted or deleted without checking them off first.
+
+- [ ] **FB-16 (DO): Hide `+ Aisle` / `Aisle` badges on items in departments not marked as "Sorted by Aisle"**
+  - **Agent Resolution Note:**
+    - Updated `app/static/js/views/lists.js` so `renderItemRow(item, store, usesAisles)` only renders the `.aisle-pill` (`Aisle X` / `+ Aisle`) button on items inside departments listed in the active store's `aisle_departments` (**Sorted by Aisle**), keeping Produce, Meat & Seafood, Bakery & Deli, Dairy & Eggs, etc. uncluttered.
+
+- [ ] **FB-17 (DO): Keep stores & layouts shared between household users while letting each user customize their own walking path (e.g. clockwise vs. counter-clockwise)**
+  - **Agent Resolution Note:**
+    - **Database & API (`app/database.py`, `app/routers/stores_router.py`, `app/routers/lists_router.py`)**: Added the `user_store_paths` table keyed by `(user_id, store_id)`, added `get_effective_store_departments(conn, store_row, user_id)`, wired per-user department ordering into `GET /api/stores` and `build_list_response(..., user_id=...)`, and added `PUT /api/stores/{store_id}/walking-path` (supports custom `departments` array or `reverse: true`) and `DELETE /api/stores/{store_id}/walking-path` to reset to the shared default.
+    - **Frontend (`app/static/js/views/stores.js` & `app/static/js/views/lists.js`)**: Reordering departments (`↑` / `↓`), clicking **⇄ Reverse My Path**, or clicking **Reset to Shared Default** updates only your personal walking path (`Your Custom Path` badge), while store definitions and mapped aisles remain shared household-wide.
+
+- [ ] **FB-18 (DO): Convert `User_Feedback_and_Requirements.txt` into a `.md` file for VS Code**
+  - **Agent Resolution Note:**
+    - Created `User_Feedback_and_Requirements.md` with the full Kanban board and removed the legacy `User_Feedback_and_Requirements.txt` from the repository.
+
+- [ ] **FB-19 (DO): Support Guest accounts that can add/check list items and customize their own walking path without deleting main users' items or changing settings**
+  - **Agent Resolution Note:**
+    - **Database & Auth (`app/database.py`, `app/auth.py`, `app/routers/auth_router.py`)**: Added `users.is_guest`, exposed account roles (`Member`, `Admin`, `Guest`) when creating household accounts in **Settings → + Add Member**, and added the `require_non_guest` FastAPI dependency (`403 Forbidden`).
+    - **Backend Guards (`lists_router.py`, `stores_router.py`, `pantry_router.py`, `catalog_router.py`, `kroger_router.py`, `recipes_router.py`, `import_router.py`)**: Guests can add/check list items, edit or delete items they added (`item.added_by == user.id`), request low pantry items (`+ To List`), and set their own per-user store walking path, while `require_non_guest` blocks Guests from deleting/editing other users' items, deleting lists or weekly templates, mutating shared stores/aisles/pantry/recipes/package sizes, generating API keys, changing passwords, or configuring Kroger.
+    - **Frontend UI (`app.js`, `lists.js`, `stores.js`, `recipes.js`, `pantry.js`, `settings.js`)**: Added `Guest` badges in the sidebar/header, hid restricted management controls for Guest logins, and replaced full Settings tabs with a Guest Account info + Sign Out view.
+
+- [ ] **FB-20 (DO): Fix recipe Text / HTML parser so steps don't end up in ingredients**
+  - **Agent Resolution Note:**
+    - Overhauled `parse_recipe_html_or_text` in `app/scraper.py` with `_extract_lines_from_html` (HTML DOM block-tag & `<li>`/`<h*>`/`<p>` extraction instead of line-splitting raw markup), `_smart_parse_recipe_lines` (classifying quantity-led lines vs. imperative cooking verbs/phrases with `_QTY_START_RE`, `_IMPERATIVE_STEP_RE`, `_COOKING_PHRASE_RE`, and stripping UI button/ad noise via `_NOISE_LINE_RE`).
+    - Updated `ParseContentPayload` (`app/routers/recipes_router.py`) and `openQuickPasteModal` (`app/static/js/views/recipes.js`) to add a **Separate Ingredients & Steps** toggle mode alongside **Smart Auto-Detect**.
+
+- [ ] **FB-21 (DO): Automatically grab missing images for recipes imported via URL**
+  - **Agent Resolution Note:**
+    - Expanded `_extract_fallback_image` in `app/scraper.py` (supports `og:image:secure_url`, `link[rel="image_src"]`, JSON-LD `@graph` images, and DOM `data-lazy-src` / `data-src` / `srcset`).
+    - Added `POST /api/recipes/sync-missing-from-url` and `POST /api/recipes/{recipe_id}/sync-from-url` in `app/routers/recipes_router.py`, automatic image lookup on `create_recipe` / `update_recipe`, auto-backfill trigger when opening **Recipes**, and a manual **🔄 Sync URL Info** button inside recipe details (`app/static/js/views/recipes.js`).
+
+- [ ] **FB-22 (DO): Automatically grab missing nutrition info for recipes imported via URL**
+  - **Agent Resolution Note:**
+    - Expanded `_extract_html_nutrition` in `app/scraper.py` to scan WP Recipe Maker, Tasty Recipes, and general `[class*="nutrition"]` DOM blocks via regex in addition to Schema.org JSON-LD `nutrition`.
+    - Wired missing nutrition scraping (with automatic ingredient macro estimation fallback via `compute_recipe_macros` if the webpage has no nutrition block) into `create_recipe`, `update_recipe`, `POST /api/recipes/sync-missing-from-url`, and `POST /api/recipes/{recipe_id}/sync-from-url` in `app/routers/recipes_router.py`, surfaced in `app/static/js/views/recipes.js`.
+
+- [ ] **FB-23 (DO): Nutrition information always automatically updates when recipe ingredients change**
+  - **Agent Resolution Note:**
+    - Updated `update_recipe` in `app/routers/recipes_router.py` and `_insert_recipe_dict` in `app/routers/import_router.py` so whenever ingredients or servings change, per-serving macros are automatically recalculated via `compute_recipe_macros` (while preserving any delta above estimated baseline for scraped recipes) and unlogged weekly `meal_calendar_slots` referencing that recipe are refreshed.
+    - Updated `openRecipeEditor` in `app/static/js/views/recipes.js` to run debounced live recalculation (`POST /api/nutrition/estimate-text`) on `ingredients_text` and `servings` edits so updated Calories/Protein/Carbs/Fat/Fiber appear immediately before saving.
+
+- [ ] **FB-24 (DO): Make recipes customizable with a diff view (`+ User Added` / `✎ Modified` / `Removed`) vs. original recipe**
+  - **Agent Resolution Note:**
+    - **Database & API (`app/database.py`, `app/routers/recipes_router.py`, `app/routers/import_router.py`)**: Added `original_ingredients_json` and `original_steps_json` baseline columns on `recipes` (backfilled on migration for existing recipes), `_compute_recipe_diff` (via `difflib.SequenceMatcher` producing `is_customized`, per-ingredient `diff_status`/`original_raw`, `removed_ingredients`, `step_diffs`, and `removed_steps`), plus `POST /api/recipes/{recipe_id}/reset-to-original` and `POST /api/recipes/{recipe_id}/save-as-original`.
+    - **Frontend (`app/static/js/views/recipes.js`, `app/static/css/styles.css`)**: Added **✨ Customized** badges on recipe cards and detail headers, a toggleable diff banner with **Show/Hide Diff**, **↩ Revert to Original**, and **✓ Set as Baseline** actions, inline **`+ User Added`** / **`✎ Modified`** (`Original: ...`) markers on ingredients & steps, and strikethrough **Removed from Original** summaries.
+
 ---
 
 ## 📋 BACKLOG / LONG-TERM FEATURES

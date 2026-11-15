@@ -6,6 +6,7 @@ export async function renderPantryView(container, state) {
   let lists = await api("/api/lists");
   let activeCategory = state.pantryCategory || "ALL";
   let search = "";
+  const isGuest = Boolean(state.user?.is_guest);
 
   function render() {
     const categories = pantryData.categories || [];
@@ -31,8 +32,10 @@ export async function renderPantryView(container, state) {
           <p class="page-subtitle">Categorized pantry inventory — items marked "In Stock" won't clutter your weekly list</p>
         </div>
         <div class="row">
-          <button class="btn btn-sm" id="import-pantry-btn">Bulk Import</button>
-          <button class="btn btn-primary btn-sm" id="add-pantry-btn">+ Add Pantry Item</button>
+          ${isGuest ? `<span class="badge badge-accent">Guest View</span>` : `
+            <button class="btn btn-sm" id="import-pantry-btn">Bulk Import</button>
+            <button class="btn btn-primary btn-sm" id="add-pantry-btn">+ Add Pantry Item</button>
+          `}
         </div>
       </div>
 
@@ -78,13 +81,15 @@ export async function renderPantryView(container, state) {
                     </div>
                   </div>
                   <div class="row" style="gap: 6px;">
-                    <button class="btn btn-sm toggle-stock-btn" data-id="${item.id}">
-                      ${item.in_stock ? "Mark Low" : "Mark In Stock"}
-                    </button>
+                    ${isGuest ? "" : `
+                      <button class="btn btn-sm toggle-stock-btn" data-id="${item.id}">
+                        ${item.in_stock ? "Mark Low" : "Mark In Stock"}
+                      </button>
+                    `}
                     ${!item.in_stock ? `
                       <button class="btn btn-sm btn-primary send-to-list-btn" data-id="${item.id}">+ To List</button>
                     ` : ""}
-                    <button class="btn btn-sm edit-pantry-btn" data-id="${item.id}">Edit</button>
+                    ${isGuest ? "" : `<button class="btn btn-sm edit-pantry-btn" data-id="${item.id}">Edit</button>`}
                   </div>
                 </div>
               `).join("")}
