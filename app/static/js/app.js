@@ -54,9 +54,20 @@ function _applyInitialHashRoute() {
 }
 
 async function bootstrap() {
+  const buildId = window.__PANTRYCART_BUILD__ || "";
+  if ("caches" in window) {
+    caches.keys()
+      .then((keys) => Promise.all(
+        keys
+          .filter((k) => !buildId || !k.endsWith(buildId))
+          .map((k) => caches.delete(k))
+      ))
+      .catch(() => {});
+  }
   if ("serviceWorker" in navigator) {
+    const buildQ = buildId ? `?v=${buildId}` : "";
     navigator.serviceWorker
-      .register("/sw.js", { updateViaCache: "none" })
+      .register(`/sw.js${buildQ}`, { updateViaCache: "none" })
       .then((reg) => reg.update().catch(() => {}))
       .catch(() => {});
   }

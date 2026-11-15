@@ -1,4 +1,5 @@
 import hashlib
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -29,12 +30,13 @@ def _compute_build_id() -> str:
     if STATIC_DIR.exists():
         for path in sorted(STATIC_DIR.rglob("*")):
             if path.is_file():
-                st = path.stat()
-                h.update(f"{path.relative_to(STATIC_DIR)}:{st.st_size}:{int(st.st_mtime)}".encode())
+                h.update(str(path.relative_to(STATIC_DIR)).encode())
+                h.update(path.read_bytes())
     return h.hexdigest()[:8]
 
 
 APP_BUILD_ID = _compute_build_id()
+_JS_IMPORT_RE = re.compile(r'((?:from|import)\s+["\'](?:\./|\.\./)[^"\']+\.js)(["\'])')
 
 
 @asynccontextmanager
@@ -87,6 +89,17 @@ def health():
     return {"status": "ok", "version": APP_VERSION, "build_id": APP_BUILD_ID}
 
 
+@app.get("/static/js/{js_path:path}")
+def serve_versioned_js(js_path: str):
+    js_root = (STATIC_DIR / "js").resolve()
+    target = (js_root / js_path).resolve()
+    if not target.is_relative_to(js_root) or not target.is_file() or target.suffix != ".js":
+        raise HTTPException(status_code=404, detail="JavaScript file not found")
+    source = target.read_text(encoding="utf-8")
+    versioned = _JS_IMPORT_RE.sub(rf"\1?v={APP_BUILD_ID}\2", source)
+    return Response(content=versioned, media_type="application/javascript")
+
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -108,4 +121,5 @@ def spa_fallback(full_path: str):
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     html = html.replace("/static/css/styles.css", f"/static/css/styles.css?v={APP_BUILD_ID}")
     html = html.replace("/static/js/app.js", f"/static/js/app.js?v={APP_BUILD_ID}")
+    html = html.replace("</head>", f'  <script>window.__PANTRYCART_BUILD__ = "{APP_BUILD_ID}";</script>\n</head>')
     return HTMLResponse(content=html)
