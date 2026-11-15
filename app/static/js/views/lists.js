@@ -1,10 +1,16 @@
 import { api } from "../api.js";
 import { ICONS, esc, fmtQty, openModal, toast } from "../utils.js";
 
-export async function renderListsView(container, state) {
+export async function renderListsView(container, state, navigate) {
   let lists = await api("/api/lists");
   const stores = await api("/api/stores");
   let templateItems = await api("/api/lists/template/items");
+  let krogerStatus = await api("/api/kroger/status").catch(() => null);
+
+  if (state.krogerJustConnected) {
+    state.krogerJustConnected = false;
+    toast("Kroger account connected! You can now send lists to your Kroger cart.");
+  }
 
   if (!state.activeListId || !lists.some((l) => l.id === state.activeListId)) {
     state.activeListId = lists[0]?.id || null;
@@ -73,8 +79,11 @@ export async function renderListsView(container, state) {
                 `).join("")}
               </select>
               <span class="badge">${esc(activeList.list_type === "weekly" ? "Weekly Trip" : activeList.list_type === "store" ? "Dedicated Store" : "One-off")}</span>
+              ${krogerStatus?.location_name ? `<span class="badge badge-info" title="Linked Kroger Store">🏪 ${esc(krogerStatus.location_name)}</span>` : ""}
             </div>
-            <div class="row">
+            <div class="row" style="gap: 6px; flex-wrap: wrap;">
+              <button class="btn btn-sm" id="kroger-aisles-btn" title="Auto-fill Kroger store aisles & prices for unchecked items">🧭 Auto-Map Aisles</button>
+              <button class="btn btn-sm btn-primary" id="kroger-cart-btn" title="Match items and send directly to your Kroger / Pick 'n Save / Fred Meyer cart">🛒 Send to Kroger Cart</button>
               <button class="btn btn-sm" id="quick-load-template-btn" title="Add active weekly staples to this list">+ Load Weekly Staples</button>
               ${activeList.list_type === "one_off" ? `<button class="btn btn-sm btn-danger" id="delete-list-btn">Delete List</button>` : ""}
             </div>
@@ -352,6 +361,210 @@ export async function renderListsView(container, state) {
     });
   }
 
+  function openKrogerSetupPromptModal(actionLabel) {
+    openModal("Connect Kroger Store First", `
+      <div class="stack-md">
+        <p class="muted">
+          To ${esc(actionLabel)}, configure your Kroger Developer API Client ID & Secret and choose your local Kroger-family store (Kroger, Mariano's, Pick 'n Save, Fred Meyer, Ralphs, King Soopers, Harris Teeter, etc.) in Settings.
+        </p>
+        <div class="row" style="justify-content: flex-end; gap: 8px;">
+          <button class="btn" id="kroger-setup-cancel-btn" type="button">Cancel</button>
+          <button class="btn btn-primary" id="kroger-go-settings-btn" type="button">Go to Settings → Kroger API</button>
+        </div>
+      </div>
+    `, (close) => {
+      document.getElementById("kroger-setup-cancel-btn")?.addEventListener("click", close);
+      document.getElementById("kroger-go-settings-btn")?.addEventListener("click", () => {
+        close();
+        state.settingsTab = "kroger";
+        if (typeof navigate === "function") {
+          navigate("settings");
+        } else {
+          window.location.hash = "#settings?tab=kroger";
+        }
+      });
+    });
+  }
+
+  function openKrogerCartModal() {
+    if (!activeList) return;
+    if (!krogerStatus?.configured || !krogerStatus?.location_id) {
+      openKrogerSetupPromptModal("match products and send them to your Kroger cart");
+      return;
+    }
+
+    openModal(`Send "${activeList.name}" to Kroger Cart`, `
+      <div id="kroger-cart-modal-body" class="stack-md">
+        <p class="muted">Searching live Kroger catalog at <strong>${esc(krogerStatus.location_name || "your store")}</strong> for unchecked items...</p>
+      </div>
+    `, async (close) => {
+      const bodyEl = document.getElementById("kroger-cart-modal-body");
+      try {
+        krogerStatus = await api("/api/kroger/status").catch(() => krogerStatus);
+        const preview = await api(`/api/kroger/preview-cart/${activeList.id}`, {
+          method: "POST",
+          body: {},
+        });
+        const items = preview.items || [];
+        const matchedCount = items.filter((it) => (it.candidates || []).length > 0).length;
+
+        bodyEl.innerHTML = `
+          <div class="stack-md">
+            <div class="row-wrap" style="justify-content: space-between; align-items: center; gap: 8px;">
+              <span class="badge badge-info">🏪 ${esc(preview.location_name || krogerStatus.location_name || "Kroger")}</span>
+              <div class="row" style="gap: 8px; align-items: center;">
+                <label class="small muted" for="kroger-modality-select" style="font-weight: 700;">Fulfillment:</label>
+                <select class="select" id="kroger-modality-select" style="width: auto; min-height: 34px;">
+                  <option value="PICKUP">Curbside Pickup</option>
+                  <option value="DELIVERY">Delivery</option>
+                </select>
+              </div>
+            </div>
+
+            ${!krogerStatus?.user_connected ? `
+              <div class="card" style="background: #fffbeb; border-color: #f59e0b;">
+                <div class="row-wrap" style="justify-content: space-between; align-items: center; gap: 10px;">
+                  <div class="small">
+                    <strong>Step Required:</strong> Sign in with your Kroger shopper account before adding items to your cart.
+                  </div>
+                  <button class="btn btn-sm btn-primary" id="kroger-oauth-connect-btn" type="button">Connect Kroger Account</button>
+                </div>
+              </div>
+            ` : `
+              <div class="small muted">Matched <strong>${matchedCount}</strong> of ${items.length} unchecked list items. Adjust product matches or quantities below before pushing to your cart.</div>
+            `}
+
+            <div id="kroger-modal-error" class="small" style="display: none; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; padding: 8px 10px; border-radius: 8px;"></div>
+
+            ${items.length === 0 ? `
+              <p class="muted">No unchecked items on this shopping list to send.</p>
+            ` : `
+              <div class="stack-sm" style="max-height: 360px; overflow-y: auto; padding-right: 4px;">
+                ${items.map((it) => {
+                  const hasMatches = (it.candidates || []).length > 0;
+                  return `
+                    <div class="card" style="padding: 10px 12px;">
+                      <div class="row" style="gap: 10px; align-items: flex-start;">
+                        <input type="checkbox" class="kroger-item-check" data-item-id="${it.list_item_id}"
+                          ${hasMatches ? "checked" : "disabled"} style="margin-top: 4px;" />
+                        <div class="grow stack-xs">
+                          <div class="row-wrap" style="justify-content: space-between; gap: 8px;">
+                            <strong>${esc(it.list_item_name)}</strong>
+                            <span class="small muted">List need: ${fmtQty(it.quantity)} ${esc(it.buy_unit || "ea")}</span>
+                          </div>
+                          <div class="row" style="gap: 8px; flex-wrap: wrap;">
+                            <select class="select grow kroger-item-select" data-item-id="${it.list_item_id}" ${hasMatches ? "" : "disabled"}>
+                              ${hasMatches ? it.candidates.map((c) => {
+                                const priceTxt = c.price != null ? ` — $${Number(c.price).toFixed(2)}` : "";
+                                const aisleTxt = c.aisle ? ` [${c.aisle}]` : "";
+                                const label = `${c.brand ? c.brand + " - " : ""}${c.description}${c.size ? " (" + c.size + ")" : ""}${priceTxt}${aisleTxt}`;
+                                return `<option value="${esc(c.upc)}" ${c.upc === it.selected_upc ? "selected" : ""}>${esc(label)}</option>`;
+                              }).join("") : `<option value="">No Kroger catalog match found</option>`}
+                            </select>
+                            <input type="number" min="1" step="1" class="input kroger-item-qty"
+                              data-item-id="${it.list_item_id}" value="${Math.max(1, Number(it.quantity) || 1)}"
+                              style="width: 72px;" ${hasMatches ? "" : "disabled"} title="Cart quantity" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join("")}
+              </div>
+            `}
+
+            <div class="row" style="justify-content: flex-end; gap: 8px;">
+              <button class="btn" id="kroger-cart-cancel-btn" type="button">Close</button>
+              <button class="btn btn-primary" id="kroger-push-submit-btn" type="button"
+                ${!krogerStatus?.user_connected || matchedCount === 0 ? "disabled" : ""}>
+                🛒 Add Selected to Kroger Cart
+              </button>
+            </div>
+          </div>
+        `;
+
+        document.getElementById("kroger-cart-cancel-btn")?.addEventListener("click", close);
+
+        document.getElementById("kroger-oauth-connect-btn")?.addEventListener("click", async (ev) => {
+          const btn = ev.currentTarget;
+          btn.disabled = true;
+          btn.textContent = "Redirecting...";
+          try {
+            const oauth = await api("/api/kroger/oauth/start");
+            if (oauth?.authorize_url) {
+              window.location.href = oauth.authorize_url;
+            }
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = "Connect Kroger Account";
+            const errEl = document.getElementById("kroger-modal-error");
+            if (errEl) {
+              errEl.textContent = err.message || "Could not start Kroger OAuth login.";
+              errEl.style.display = "block";
+            }
+          }
+        });
+
+        document.getElementById("kroger-push-submit-btn")?.addEventListener("click", async (ev) => {
+          const pushBtn = ev.currentTarget;
+          const errEl = document.getElementById("kroger-modal-error");
+          if (errEl) errEl.style.display = "none";
+
+          const selected = [];
+          document.querySelectorAll(".kroger-item-check").forEach((chk) => {
+            if (!chk.checked) return;
+            const id = chk.dataset.itemId;
+            const sel = document.querySelector(`.kroger-item-select[data-item-id="${id}"]`);
+            const qtyEl = document.querySelector(`.kroger-item-qty[data-item-id="${id}"]`);
+            const upc = sel?.value?.trim() || "";
+            const qty = Math.max(1, parseInt(qtyEl?.value || "1", 10) || 1);
+            if (upc) selected.push({ upc, quantity: qty });
+          });
+
+          if (!selected.length) {
+            toast("Select at least one matched Kroger item to add.");
+            return;
+          }
+
+          const modality = document.getElementById("kroger-modality-select")?.value || "PICKUP";
+          pushBtn.disabled = true;
+          pushBtn.textContent = "Sending to Kroger Cart...";
+          try {
+            const res = await api("/api/kroger/push-cart", {
+              method: "POST",
+              body: { modality, items: selected },
+            });
+            close();
+            toast(`Added ${res.added_count} item${res.added_count === 1 ? "" : "s"} to your Kroger ${modality.toLowerCase()} cart!`);
+          } catch (err) {
+            pushBtn.disabled = false;
+            pushBtn.textContent = "🛒 Add Selected to Kroger Cart";
+            if (errEl) {
+              errEl.textContent = err.message || "Could not push items to Kroger cart.";
+              errEl.style.display = "block";
+            }
+          }
+        });
+      } catch (err) {
+        bodyEl.innerHTML = `
+          <div class="stack-md">
+            <p style="color: #b91c1c;">${esc(err.message || "Failed to load Kroger product preview.")}</p>
+            <div class="row" style="justify-content: flex-end; gap: 8px;">
+              <button class="btn" id="kroger-err-close-btn" type="button">Close</button>
+              <button class="btn btn-primary" id="kroger-err-settings-btn" type="button">Check Kroger Settings</button>
+            </div>
+          </div>
+        `;
+        document.getElementById("kroger-err-close-btn")?.addEventListener("click", close);
+        document.getElementById("kroger-err-settings-btn")?.addEventListener("click", () => {
+          close();
+          state.settingsTab = "kroger";
+          if (typeof navigate === "function") navigate("settings");
+        });
+      }
+    });
+  }
+
   function bindEvents() {
     document.querySelectorAll(".list-tab").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -362,6 +575,34 @@ export async function renderListsView(container, state) {
     });
 
     document.getElementById("template-list-btn")?.addEventListener("click", openTemplateManagerModal);
+
+    document.getElementById("kroger-aisles-btn")?.addEventListener("click", async (ev) => {
+      if (!activeList) return;
+      if (!krogerStatus?.configured || !krogerStatus?.location_id) {
+        openKrogerSetupPromptModal("auto-map store aisles");
+        return;
+      }
+      const btn = ev.currentTarget;
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Mapping...";
+      try {
+        const res = await api(`/api/kroger/auto-aisles/${activeList.id}`, {
+          method: "POST",
+          body: {},
+        });
+        activeList = await api(`/api/lists/${activeList.id}`);
+        lists = await api("/api/lists");
+        render();
+        toast(`Mapped aisles for ${res.updated_count} of ${res.total_unchecked} items at ${res.location_name || "Kroger"}!`);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = orig;
+        toast(err.message || "Could not map Kroger aisles.");
+      }
+    });
+
+    document.getElementById("kroger-cart-btn")?.addEventListener("click", openKrogerCartModal);
 
     document.getElementById("quick-load-template-btn")?.addEventListener("click", async () => {
       activeList = await api(`/api/lists/${activeList.id}/apply-template`, {

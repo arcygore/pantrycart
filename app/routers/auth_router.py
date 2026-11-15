@@ -49,6 +49,17 @@ class CreateApiKeyPayload(BaseModel):
     name: str = Field(min_length=1, max_length=60)
 
 
+def _user_dict(row) -> dict:
+    keys = row.keys() if hasattr(row, "keys") else []
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "is_admin": bool(row["is_admin"]),
+        "shortcut_verified": bool(row["shortcut_verified"]) if "shortcut_verified" in keys else False,
+    }
+
+
 def _set_auth_cookie(response: Response, request: Request, token: str):
     response.set_cookie(
         key=COOKIE_NAME,
@@ -97,6 +108,7 @@ def initial_setup(payload: SetupPayload, request: Request, response: Response):
             "username": uname,
             "display_name": payload.display_name.strip(),
             "is_admin": True,
+            "shortcut_verified": False,
         }
     }
 
@@ -106,7 +118,7 @@ def login(payload: LoginPayload, request: Request, response: Response):
     uname = payload.username.strip().lower()
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, username, display_name, password_hash, is_admin FROM users WHERE username = ?",
+            "SELECT id, username, display_name, password_hash, is_admin, shortcut_verified FROM users WHERE username = ?",
             (uname,),
         ).fetchone()
     if not row or not verify_password(payload.password, row["password_hash"]):
@@ -115,12 +127,7 @@ def login(payload: LoginPayload, request: Request, response: Response):
     token, _ = create_session(row["id"])
     _set_auth_cookie(response, request, token)
     return {
-        "user": {
-            "id": row["id"],
-            "username": row["username"],
-            "display_name": row["display_name"],
-            "is_admin": bool(row["is_admin"]),
-        }
+        "user": _user_dict(row)
     }
 
 
@@ -137,14 +144,11 @@ def logout(request: Request, response: Response):
 def list_users(user: dict = Depends(get_current_user)):
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, username, display_name, is_admin, created_at FROM users ORDER BY id ASC"
+            "SELECT id, username, display_name, is_admin, shortcut_verified, created_at FROM users ORDER BY id ASC"
         ).fetchall()
     return [
         {
-            "id": r["id"],
-            "username": r["username"],
-            "display_name": r["display_name"],
-            "is_admin": bool(r["is_admin"]),
+            **_user_dict(r),
             "created_at": r["created_at"],
         }
         for r in rows

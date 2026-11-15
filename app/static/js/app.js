@@ -28,10 +28,36 @@ const state = {
 
 let activePollTimer = null;
 
+function _applyInitialHashRoute() {
+  const h = window.location.hash || "";
+  if (!h.startsWith("#")) return;
+  const clean = h.slice(1);
+  const [viewPart, queryPart] = clean.split("?");
+  if (NAV_ITEMS.some((i) => i.id === viewPart)) {
+    state.view = viewPart;
+  }
+  if (queryPart) {
+    const params = new URLSearchParams(queryPart);
+    if (params.get("shortcut_verified") === "1") {
+      state.shortcutJustVerified = true;
+      state.view = "planner";
+    }
+    if (params.get("kroger_connected") === "1") {
+      state.krogerJustConnected = true;
+      state.view = "lists";
+    }
+    if (params.get("tab")) {
+      state.settingsTab = params.get("tab");
+    }
+    window.history.replaceState(null, "", "/#" + state.view);
+  }
+}
+
 async function bootstrap() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
+  _applyInitialHashRoute();
 
   const root = document.getElementById("app");
   try {
@@ -122,7 +148,7 @@ async function loadCurrentView() {
 
   try {
     if (state.view === "lists") {
-      activePollTimer = await renderListsView(viewRoot, state);
+      activePollTimer = await renderListsView(viewRoot, state, navigate);
     } else if (state.view === "planner") {
       await renderPlannerView(viewRoot, state, navigate);
     } else if (state.view === "recipes") {
@@ -136,7 +162,7 @@ async function loadCurrentView() {
         await api("/api/auth/logout", { method: "POST" });
         state.user = null;
         bootstrap();
-      });
+      }, navigate);
     }
   } catch (err) {
     if (err.status === 401) {

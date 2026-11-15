@@ -11,7 +11,9 @@ from app.routers import (
     catalog_router,
     ha_router,
     import_router,
+    kroger_router,
     lists_router,
+    nutrition_router,
     pantry_router,
     planner_router,
     recipes_router,
@@ -40,6 +42,8 @@ app.include_router(catalog_router.router)
 app.include_router(pantry_router.router)
 app.include_router(import_router.router)
 app.include_router(ha_router.router)
+app.include_router(nutrition_router.router)
+app.include_router(kroger_router.router)
 
 
 @app.get("/api/health")

@@ -100,6 +100,21 @@
     - **Automatic WordPress REST API Fallback (`app/scraper.py`)**: Many recipe sites (including BudgetBytes) run on WordPress behind Cloudflare rules that block server-side HTML fetches (`403`) while leaving the public WordPress REST API (`/wp-json/wp/v2/posts?slug=...`) open. When direct HTML scraping returns `403`, PantryCart now automatically queries the site's WP REST API and extracts the full recipe (title, photo, times, servings, ingredients, and steps) from Yoast Schema.org JSON-LD and WP Recipe Maker HTML blocks.
     - **Quick Paste Text/HTML Fallback (`POST /api/recipes/parse-content` & `app/static/js/views/recipes.js`)**: Added a **Paste Text / HTML** button (and automatic modal fallback if a non-WordPress site still blocks server IPs) so you can paste copied recipe text or page HTML source (`Ctrl+U`) to parse and open directly in the Recipe Editor.
 
+- [ ] **FB-13 (DO): Kroger Official Public API Integration (`developer.kroger.com`) — Auto-Map Aisles, Prices & Send List to Kroger Cart (Walmart scrapped)**
+  - **Agent Resolution Note:**
+    - **Database & Config (`app/database.py`, `app/routers/kroger_router.py`)**: Added `kroger_config` and `kroger_user_tokens` tables plus `/api/kroger/*` endpoints supporting OAuth2 Client Credentials (for catalog/aisle/store search) and Authorization Code OAuth2 (`cart.basic:write product.compact`) with automatic refresh tokens for shopper carts across Kroger-family banners (Kroger, Mariano's, Pick 'n Save, Fred Meyer, Ralphs, King Soopers, Harris Teeter, etc.).
+    - **Settings → Kroger API & Shortcuts (`app/static/js/views/settings.js`)**: Configure & verify your `Client ID` and `Client Secret`, enter your Redirect URI (`<your-domain>/api/kroger/oauth/callback`), search nearby Kroger-family stores by 5-digit ZIP code (`locationId`), link your Kroger store, and connect your Kroger shopper login via OAuth2.
+    - **Shopping Lists (`app/static/js/views/lists.js`)**: Added **🧭 Auto-Map Aisles** (looks up exact Kroger `aisleLocations` + live prices at your selected `locationId` and saves aisle numbers to both the list and your store aisle memory) and **🛒 Send to Kroger Cart** (matches list items to Kroger UPCs with candidate dropdowns, quantity controls, `PICKUP`/`DELIVERY` modality selector, and one-tap `PUT /v1/cart/add`).
+
+- [ ] **FB-14 (DO): Recipe Macro Calculator, Custom Portion Scaling, Lose It! Quick-Entry Card & 2-Step iOS Shortcut Meal Logger**
+  - **Agent Resolution Note:**
+    - **Automatic Nutrition Scraping + Ingredient Macro Estimator (`app/scraper.py`, `app/routers/nutrition_router.py`)**: Automatically pulls Schema.org JSON-LD `nutrition` / WP Recipe Maker HTML nutrition blocks when importing recipes, and adds a built-in ingredient nutrition estimator (`POST /api/nutrition/estimate-recipe/{id}` & `POST /api/nutrition/estimate-text`) plus common single-food snack lookup for non-recipe calendar slots.
+    - **Custom Portion Divider (`custom_portions` in `app/database.py`, `app/routers/recipes_router.py`)**: Divide any recipe into your actual meal-prep container/portion count (e.g., dividing a 4-serving recipe into `5` portions) inside **Recipes** or directly inside the **Lose It! Quick-Entry Card**, automatically recalculating per-portion Calories, Protein, Carbs, Fat, and Fiber without changing shopping quantities unless desired.
+    - **Lose It! Quick-Entry Card (`app/static/js/nutrition_ui.js`, `app/static/js/views/recipes.js`, `app/static/js/views/planner.js`)**: One-tap **📋 Lose It! / Macro Card** modal displaying clean **Per Portion** and **Whole Batch** macros with 1-click **Copy Per-Portion Summary** and **Copy Lose It! Quick Line** buttons.
+    - **2-Step iOS Shortcut Logger (`app/static/js/views/planner.js`, `app/static/js/views/settings.js`, `app/routers/nutrition_router.py`)**:
+      - **Step 1 (Shortcut Not Verified — `shortcut_verified = false`)**: All **🔒 Log Meals** buttons on **This Week** day cards and meal slots remain visibly locked/grayed out (`.btn-locked`) while exposing **Step 1: Setup & Verify Shortcut** to guide creating/downloading the `PantryCart Log Macros` iOS Shortcut (`shortcuts://create-shortcut` + `/api/nutrition/ios-shortcut` template) and running an `x-callback-url` test (`#planner?shortcut_verified=1`) or confirming availability.
+      - **Step 2 (Shortcut Verified — `shortcut_verified = true`)**: All **📲 Log Meals** buttons unlock into active buttons (`.btn-log-ready` / `.btn-log-done` `✓ Logged`) so you can log an individual meal or an entire day's planned meals (filtered by **Everyone** or a specific household member like `Me` / `Wife`) directly to Apple Health / Shortcuts & mark them logged in PantryCart.
+
 ---
 
 ## 📋 BACKLOG / LONG-TERM FEATURES
@@ -111,7 +126,7 @@
   - Allow the meal plan calendar to sync to Home Assistant or Google Calendar (e.g., via an iCal `.ics` feed and HA REST sensor).
 - [ ] **LT-03: "Bird's-Eye View" Visual Store Map**
   - Visual 2D store layout where departments/aisles can be placed on a bird's-eye map of the store.
-- [ ] **LT-04: Recipe Nutrition & Custom Portion Scaling**
+- [ ] **LT-04: Recipe Nutrition & Custom Portion Scaling** *(Implemented & awaiting approval in **FB-14** under Ready for Review!)*
   - Pull in nutrition information for recipes and allow dividing a recipe into custom portions (e.g., "dividing this recipe into 5 servings instead of 6") with automatic per-serving macro calculation.
 
 ---

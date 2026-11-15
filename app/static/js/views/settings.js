@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { isShortcutReady, openShortcutSetupModal } from "../nutrition_ui.js";
 import { closeModal, esc, openModal, toast } from "../utils.js";
 
 export async function renderSettingsView(container, state, onLogout) {
@@ -6,6 +7,19 @@ export async function renderSettingsView(container, state, onLogout) {
   let users = await api("/api/auth/users");
   let catalog = await api("/api/catalog");
   let apiKeys = await api("/api/auth/api-keys");
+  let stores = await api("/api/stores");
+  let krogerStatus = await api("/api/kroger/status").catch(() => ({
+    configured: false,
+    client_id: "",
+    has_client_secret: false,
+    redirect_uri: `${window.location.origin}/api/kroger/oauth/callback`,
+    location_id: "",
+    location_name: "",
+    location_address: "",
+    linked_store_id: null,
+    user_connected: false,
+  }));
+  let krogerSearchResults = [];
   let catSearch = "";
   let newlyCreatedKey = null;
 
@@ -16,7 +30,7 @@ export async function renderSettingsView(container, state, onLogout) {
       <div class="page-header">
         <div>
           <h1 class="page-title">Settings</h1>
-          <p class="page-subtitle">Household accounts, US store package sizes &amp; Home Assistant sensors</p>
+          <p class="page-subtitle">Household accounts, US store package sizes, Kroger API &amp; Home Assistant</p>
         </div>
         <button class="btn btn-sm" id="logout-btn">Sign Out (${esc(state.user.display_name)})</button>
       </div>
@@ -24,10 +38,14 @@ export async function renderSettingsView(container, state, onLogout) {
       <div class="subtabs">
         <button class="subtab ${tab === "household" ? "active" : ""}" data-tab="household">Household Accounts</button>
         <button class="subtab ${tab === "catalog" ? "active" : ""}" data-tab="catalog">US Store Package Sizes</button>
+        <button class="subtab ${tab === "kroger" ? "active" : ""}" data-tab="kroger">Kroger API &amp; Shortcuts</button>
         <button class="subtab ${tab === "ha" ? "active" : ""}" data-tab="ha">Home Assistant &amp; API</button>
       </div>
 
-      ${tab === "household" ? renderHouseholdTab() : tab === "catalog" ? renderCatalogTab() : renderHaTab(origin)}
+      ${tab === "household" ? renderHouseholdTab()
+        : tab === "catalog" ? renderCatalogTab()
+        : tab === "kroger" ? renderKrogerTab(origin)
+        : renderHaTab(origin)}
     `;
 
     bindEvents();
@@ -110,6 +128,130 @@ export async function renderSettingsView(container, state, onLogout) {
             </div>
           `).join("")}
           ${filtered.length > 60 ? `<p class="small muted">Showing first 60 matches — refine search to see more.</p>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderKrogerTab(origin) {
+    const redirectUri = krogerStatus.redirect_uri || `${origin}/api/kroger/oauth/callback`;
+    const shortcutOk = isShortcutReady(state);
+    return `
+      <div class="stack-md">
+        <div class="card stack-md">
+          <div class="row-wrap" style="justify-content: space-between;">
+            <div>
+              <h2 style="margin: 0; font-size: 1.08rem;">Step 1: Kroger Developer API Credentials</h2>
+              <p class="small muted" style="margin: 2px 0 0;">
+                Create a free app on <a href="https://developer.kroger.com/" target="_blank" rel="noopener">developer.kroger.com</a> (Production or Certification environment) and enable <strong>Products</strong>, <strong>Locations</strong>, and <strong>Cart</strong> scopes.
+              </p>
+            </div>
+            <span class="badge ${krogerStatus.configured ? "badge-primary" : "badge-accent"}">
+              ${krogerStatus.configured ? "Credentials Verified ✓" : "Not Configured"}
+            </span>
+          </div>
+
+          <div class="card" style="background: var(--bg); padding: 10px 12px;">
+            <div class="small muted">Add this <strong>Redirect URI</strong> inside your Kroger Developer app settings:</div>
+            <code style="word-break: break-all; font-weight: 700;">${esc(redirectUri)}</code>
+          </div>
+
+          <form id="kroger-config-form" class="stack-sm">
+            <div class="grid-2">
+              <div>
+                <label class="field-label">Kroger Client ID</label>
+                <input class="input" name="client_id" value="${esc(krogerStatus.client_id || "")}" placeholder="your-client-id" required />
+              </div>
+              <div>
+                <label class="field-label">Kroger Client Secret</label>
+                <input class="input" name="client_secret" type="password" placeholder="${krogerStatus.has_client_secret ? "******** (saved — leave blank to keep)" : "your-client-secret"}" ${krogerStatus.has_client_secret ? "" : "required"} />
+              </div>
+            </div>
+            <div class="grid-2">
+              <div>
+                <label class="field-label">Linked PantryCart Store</label>
+                <select class="select" name="linked_store_id">
+                  <option value="">None / Auto</option>
+                  ${stores.map((s) => `<option value="${s.id}" ${s.id === krogerStatus.linked_store_id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}
+                </select>
+              </div>
+              <div>
+                <label class="field-label">Custom Redirect URI Override (optional)</label>
+                <input class="input" name="redirect_uri" value="${esc(krogerStatus.redirect_uri || "")}" placeholder="${esc(redirectUri)}" />
+              </div>
+            </div>
+            <div>
+              <button class="btn btn-primary" type="submit" id="save-kroger-btn">Save &amp; Verify Credentials</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card stack-md">
+          <div class="row-wrap" style="justify-content: space-between;">
+            <div>
+              <h2 style="margin: 0; font-size: 1.08rem;">Step 2: Select Your Local Kroger Store (for Aisle &amp; Price Lookup)</h2>
+              <p class="small muted" style="margin: 2px 0 0;">
+                ${krogerStatus.location_id
+                  ? `Selected: <strong>${esc(krogerStatus.location_name)}</strong> — ${esc(krogerStatus.location_address)} (<code>${esc(krogerStatus.location_id)}</code>)`
+                  : "Search by ZIP code after saving your credentials above."}
+              </p>
+            </div>
+            ${krogerStatus.location_id ? `<span class="badge badge-primary">Store Selected ✓</span>` : ""}
+          </div>
+
+          <form id="kroger-zip-form" class="row-wrap">
+            <input class="input" name="zip_code" placeholder="Enter 5-digit ZIP code (e.g. 30309)..." style="max-width: 240px;" required />
+            <button class="btn btn-sm" type="submit" ${krogerStatus.configured ? "" : "disabled"}>Search Nearby Kroger Stores</button>
+          </form>
+
+          ${krogerSearchResults.length ? `
+            <div class="stack-sm">
+              ${krogerSearchResults.map((loc) => `
+                <div class="row" style="justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px;">
+                  <div>
+                    <div style="font-weight: 700;">${esc(loc.name)} <span class="badge">${esc(loc.chain)}</span></div>
+                    <div class="small muted">${esc(loc.address)} · ID: ${esc(loc.location_id)}</div>
+                  </div>
+                  <button class="btn btn-primary btn-sm select-kroger-loc-btn"
+                    data-loc-id="${esc(loc.location_id)}"
+                    data-loc-name="${esc(loc.name)}"
+                    data-loc-addr="${esc(loc.address)}"
+                    data-loc-chain="${esc(loc.chain)}" type="button">
+                    Select Store
+                  </button>
+                </div>
+              `).join("")}
+            </div>
+          ` : ""}
+        </div>
+
+        <div class="card stack-md">
+          <div class="row-wrap" style="justify-content: space-between;">
+            <div>
+              <h2 style="margin: 0; font-size: 1.08rem;">Step 3: Connect Your Personal Kroger Account (for Cart Push)</h2>
+              <p class="small muted" style="margin: 2px 0 0;">Required by Kroger OAuth2 so PantryCart can push items directly into your Pickup / Delivery cart.</p>
+            </div>
+            <span class="badge ${krogerStatus.user_connected ? "badge-primary" : "badge-accent"}">
+              ${krogerStatus.user_connected ? "Account Connected ✓" : "Not Signed In"}
+            </span>
+          </div>
+          <div>
+            <button class="btn btn-accent" id="connect-kroger-oauth-btn" type="button" ${krogerStatus.configured ? "" : "disabled"}>
+              🛒 ${krogerStatus.user_connected ? "Reconnect Kroger Account" : "Connect Kroger Account"}
+            </button>
+          </div>
+        </div>
+
+        <div class="card stack-md">
+          <div class="row-wrap" style="justify-content: space-between;">
+            <div>
+              <h2 style="margin: 0; font-size: 1.08rem;">iOS Shortcut (Apple Health / Lose It! Sync)</h2>
+              <p class="small muted" style="margin: 2px 0 0;">Configure and verify the 2-step shortcut used by This Week's Meal Calendar.</p>
+            </div>
+            <button class="btn btn-sm ${shortcutOk ? "" : "btn-primary"}" id="settings-shortcut-btn" type="button">
+              ${shortcutOk ? "✓ Shortcut Verified (Manage)" : "Setup iOS Shortcut"}
+            </button>
+          </div>
         </div>
       </div>
     `;
@@ -377,6 +519,74 @@ sensor:
         apiKeys = await api("/api/auth/api-keys");
         render();
       });
+    });
+
+    document.getElementById("settings-shortcut-btn")?.addEventListener("click", () => {
+      openShortcutSetupModal(state, () => render());
+    });
+
+    document.getElementById("kroger-config-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const btn = document.getElementById("save-kroger-btn");
+      btn.disabled = true;
+      btn.textContent = "Verifying...";
+      try {
+        await api("/api/kroger/config", {
+          method: "PUT",
+          body: {
+            client_id: f.client_id.value.trim(),
+            client_secret: f.client_secret.value.trim(),
+            redirect_uri: f.redirect_uri.value.trim(),
+            linked_store_id: f.linked_store_id.value ? Number(f.linked_store_id.value) : null,
+          },
+        });
+        krogerStatus = await api("/api/kroger/status");
+        toast("Kroger API credentials verified & saved!");
+        render();
+      } catch (err) {
+        toast(err.message, true);
+        btn.disabled = false;
+        btn.textContent = "Save & Verify Credentials";
+      }
+    });
+
+    document.getElementById("kroger-zip-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        krogerSearchResults = await api(`/api/kroger/locations?zip_code=${encodeURIComponent(e.target.zip_code.value.trim())}`);
+        if (!krogerSearchResults.length) toast("No Kroger stores found near that ZIP.", true);
+        render();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+
+    document.querySelectorAll(".select-kroger-loc-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await api("/api/kroger/location", {
+          method: "PUT",
+          body: {
+            location_id: btn.dataset.locId,
+            location_name: btn.dataset.locName,
+            location_address: btn.dataset.locAddr,
+            location_chain: btn.dataset.locChain,
+          },
+        });
+        krogerStatus = await api("/api/kroger/status");
+        krogerSearchResults = [];
+        toast(`Selected ${krogerStatus.location_name}!`);
+        render();
+      });
+    });
+
+    document.getElementById("connect-kroger-oauth-btn")?.addEventListener("click", async () => {
+      try {
+        const res = await api("/api/kroger/oauth/start");
+        window.location.href = res.authorize_url;
+      } catch (err) {
+        toast(err.message, true);
+      }
     });
   }
 

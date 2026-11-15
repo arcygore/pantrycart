@@ -31,7 +31,22 @@ class RecipePayload(BaseModel):
     tags: list[str] = Field(default_factory=list)
     steps: list[str] = Field(default_factory=list)
     notes: str = ""
+    calories_per_serving: Optional[float] = None
+    protein_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    fiber_g: Optional[float] = None
+    custom_portions: Optional[float] = None
     ingredients: list[IngredientInput] = Field(default_factory=list)
+
+
+class PortionsUpdatePayload(BaseModel):
+    custom_portions: Optional[float] = Field(default=None, gt=0, le=100)
+    calories_per_serving: Optional[float] = None
+    protein_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    fiber_g: Optional[float] = None
 
 
 class ScrapePayload(BaseModel):
@@ -39,7 +54,8 @@ class ScrapePayload(BaseModel):
 
 
 class ParseContentPayload(BaseModel):
-    content: str = Field(min_length=5)
+    raw_content: str = ""
+    content: str = ""
     source_url: str = ""
 
 
@@ -54,6 +70,7 @@ def _serialize_recipe(conn, row) -> dict:
         """,
         (row["id"],),
     ).fetchall()
+    keys = row.keys() if hasattr(row, "keys") else []
     return {
         "id": row["id"],
         "title": row["title"],
@@ -66,6 +83,12 @@ def _serialize_recipe(conn, row) -> dict:
         "tags": json.loads(row["tags_json"] or "[]"),
         "steps": json.loads(row["steps_json"] or "[]"),
         "notes": row["notes"],
+        "calories_per_serving": row["calories_per_serving"] if "calories_per_serving" in keys else None,
+        "protein_g": row["protein_g"] if "protein_g" in keys else None,
+        "carbs_g": row["carbs_g"] if "carbs_g" in keys else None,
+        "fat_g": row["fat_g"] if "fat_g" in keys else None,
+        "fiber_g": row["fiber_g"] if "fiber_g" in keys else None,
+        "custom_portions": row["custom_portions"] if "custom_portions" in keys else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "ingredients": [dict(i) for i in ings],
@@ -109,8 +132,11 @@ async def scrape_recipe(payload: ScrapePayload, user: dict = Depends(get_current
 
 @router.post("/parse-content")
 def parse_recipe_content(payload: ParseContentPayload, user: dict = Depends(get_current_user)):
+    raw = (payload.raw_content or payload.content or "").strip()
+    if len(raw) < 5:
+        raise HTTPException(status_code=400, detail="Please paste recipe text or HTML source.")
     try:
-        return parse_recipe_html_or_text(payload.content, payload.source_url.strip())
+        return parse_recipe_html_or_text(raw, payload.source_url.strip())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -124,6 +150,32 @@ def get_recipe(recipe_id: int, user: dict = Depends(get_current_user)):
         return _serialize_recipe(conn, row)
 
 
+@router.patch("/{recipe_id}/portions")
+def update_recipe_portions(recipe_id: int, payload: PortionsUpdatePayload, user: dict = Depends(get_current_user)):
+    now = utc_now_iso()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM recipes WHERE id = ?", (recipe_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Recipe not found")
+        fset = payload.model_fields_set
+        custom_portions = payload.custom_portions if "custom_portions" in fset else row["custom_portions"]
+        cal = payload.calories_per_serving if "calories_per_serving" in fset else row["calories_per_serving"]
+        pro = payload.protein_g if "protein_g" in fset else row["protein_g"]
+        carb = payload.carbs_g if "carbs_g" in fset else row["carbs_g"]
+        fat = payload.fat_g if "fat_g" in fset else row["fat_g"]
+        fib = payload.fiber_g if "fiber_g" in fset else row["fiber_g"]
+        conn.execute(
+            """
+            UPDATE recipes
+            SET custom_portions = ?, calories_per_serving = ?, protein_g = ?, carbs_g = ?, fat_g = ?, fiber_g = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (custom_portions, cal, pro, carb, fat, fib, now, recipe_id),
+        )
+        updated = conn.execute("SELECT * FROM recipes WHERE id = ?", (recipe_id,)).fetchone()
+        return _serialize_recipe(conn, updated)
+
+
 @router.post("")
 def create_recipe(payload: RecipePayload, user: dict = Depends(get_current_user)):
     now = utc_now_iso()
@@ -133,8 +185,10 @@ def create_recipe(payload: RecipePayload, user: dict = Depends(get_current_user)
             """
             INSERT INTO recipes (
                 title, description, servings, prep_minutes, cook_minutes,
-                source_url, image_url, tags_json, steps_json, notes, created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_url, image_url, tags_json, steps_json, notes,
+                calories_per_serving, protein_g, carbs_g, fat_g, fiber_g, custom_portions,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.title.strip(),
@@ -147,6 +201,12 @@ def create_recipe(payload: RecipePayload, user: dict = Depends(get_current_user)
                 json.dumps([t.strip() for t in payload.tags if t.strip()]),
                 json.dumps([s.strip() for s in payload.steps if s.strip()]),
                 payload.notes.strip(),
+                payload.calories_per_serving,
+                payload.protein_g,
+                payload.carbs_g,
+                payload.fat_g,
+                payload.fiber_g,
+                payload.custom_portions,
                 user["id"],
                 now,
                 now,
@@ -170,7 +230,9 @@ def update_recipe(recipe_id: int, payload: RecipePayload, user: dict = Depends(g
             """
             UPDATE recipes
             SET title = ?, description = ?, servings = ?, prep_minutes = ?, cook_minutes = ?,
-                source_url = ?, image_url = ?, tags_json = ?, steps_json = ?, notes = ?, updated_at = ?
+                source_url = ?, image_url = ?, tags_json = ?, steps_json = ?, notes = ?,
+                calories_per_serving = ?, protein_g = ?, carbs_g = ?, fat_g = ?, fiber_g = ?, custom_portions = ?,
+                updated_at = ?
             WHERE id = ?
             """,
             (
@@ -184,6 +246,12 @@ def update_recipe(recipe_id: int, payload: RecipePayload, user: dict = Depends(g
                 json.dumps([t.strip() for t in payload.tags if t.strip()]),
                 json.dumps([s.strip() for s in payload.steps if s.strip()]),
                 payload.notes.strip(),
+                payload.calories_per_serving,
+                payload.protein_g,
+                payload.carbs_g,
+                payload.fat_g,
+                payload.fiber_g,
+                payload.custom_portions,
                 now,
                 recipe_id,
             ),

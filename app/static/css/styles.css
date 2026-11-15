@@ -1067,3 +1067,115 @@ a {
   color: #3730a3;
 }
 
+/* Macro Strips, Lose It! Quick-Entry Card & 2-Step iOS Shortcut Controls (FB-14) */
+.macro-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.macro-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.73rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.macro-chip.cal {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+
+.macro-chip.pro {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #bfdbfe;
+}
+
+.day-macro-bar {
+  padding: 6px 11px;
+  background: #fdfcf9;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.76rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.step-wizard-banner {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 11px 13px;
+  background: var(--bg);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.step-wizard-banner.ready {
+  background: var(--primary-soft);
+  border-color: #b7dcc8;
+}
+
+.btn-locked {
+  background: #e5e7eb !important;
+  border-color: #d1d5db !important;
+  color: #6b7280 !important;
+  cursor: not-allowed;
+  opacity: 0.82;
+}
+
+.btn-log-ready {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #ffffff;
+}
+
+.btn-log-ready:hover {
+  background: #115e59;
+}
+
+.btn-log-done {
+  background: var(--primary-soft);
+  border-color: #b7dcc8;
+  color: var(--primary);
+}
+
+.nutrition-card {
+  border: 2px solid #1f2937;
+  border-radius: 10px;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.nutrition-card-title {
+  font-size: 1.15rem;
+  font-weight: 900;
+  border-bottom: 6px solid #1f2937;
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+
+.nutrition-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.nutrition-row:last-child {
+  border-bottom: none;
+}
+
+

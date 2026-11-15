@@ -175,6 +175,55 @@ def _extract_tags(recipe_obj: dict) -> list[str]:
     return out[:6]
 
 
+def _parse_nutrient_number(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return round(float(val), 1)
+    m = re.search(r"(\d+(?:\.\d+)?)", str(val))
+    if m:
+        return round(float(m.group(1)), 1)
+    return None
+
+
+def _extract_nutrition(recipe_ld: dict) -> dict[str, Optional[float]]:
+    nut = recipe_ld.get("nutrition")
+    if not isinstance(nut, dict):
+        return {
+            "calories_per_serving": None,
+            "protein_g": None,
+            "carbs_g": None,
+            "fat_g": None,
+            "fiber_g": None,
+        }
+    return {
+        "calories_per_serving": _parse_nutrient_number(nut.get("calories")),
+        "protein_g": _parse_nutrient_number(nut.get("proteinContent")),
+        "carbs_g": _parse_nutrient_number(nut.get("carbohydrateContent")),
+        "fat_g": _parse_nutrient_number(nut.get("fatContent")),
+        "fiber_g": _parse_nutrient_number(nut.get("fiberContent")),
+    }
+
+
+def _extract_html_nutrition(soup: BeautifulSoup) -> dict[str, Optional[float]]:
+    def _sel_num(selectors: list[str]) -> Optional[float]:
+        for sel in selectors:
+            el = soup.select_one(sel)
+            if el:
+                val = _parse_nutrient_number(el.get_text(" "))
+                if val is not None:
+                    return val
+        return None
+
+    return {
+        "calories_per_serving": _sel_num(["[itemprop='calories']", ".wprm-nutrition-label-text-nutrition-container-calories .wprm-nutrition-label-text-nutrition-value"]),
+        "protein_g": _sel_num(["[itemprop='proteinContent']", ".wprm-nutrition-label-text-nutrition-container-protein .wprm-nutrition-label-text-nutrition-value"]),
+        "carbs_g": _sel_num(["[itemprop='carbohydrateContent']", ".wprm-nutrition-label-text-nutrition-container-carbohydrates .wprm-nutrition-label-text-nutrition-value"]),
+        "fat_g": _sel_num(["[itemprop='fatContent']", ".wprm-nutrition-label-text-nutrition-container-fat .wprm-nutrition-label-text-nutrition-value"]),
+        "fiber_g": _sel_num(["[itemprop='fiberContent']", ".wprm-nutrition-label-text-nutrition-container-fiber .wprm-nutrition-label-text-nutrition-value"]),
+    }
+
+
 def _build_recipe_from_ld(recipe_ld: dict, base_url: str, fallback_image: str = "") -> Optional[dict[str, Any]]:
     title = _clean_text(recipe_ld.get("name") or "")
     desc = _clean_text(recipe_ld.get("description") or "")
@@ -192,6 +241,7 @@ def _build_recipe_from_ld(recipe_ld: dict, base_url: str, fallback_image: str = 
     elif not image_url:
         image_url = fallback_image
     tags = _extract_tags(recipe_ld)
+    nut = _extract_nutrition(recipe_ld)
 
     if title and (ingredients or steps):
         return {
@@ -205,6 +255,7 @@ def _build_recipe_from_ld(recipe_ld: dict, base_url: str, fallback_image: str = 
             "tags": tags,
             "ingredients": ingredients,
             "steps": steps,
+            **nut,
         }
     return None
 
@@ -255,6 +306,7 @@ def parse_recipe_html_or_text(raw_content: str, source_url: str = "") -> dict[st
             steps.append(txt)
 
     if ingredients or steps:
+        html_nut = _extract_html_nutrition(soup)
         return {
             "title": title or "Imported Recipe",
             "description": "",
@@ -266,6 +318,7 @@ def parse_recipe_html_or_text(raw_content: str, source_url: str = "") -> dict[st
             "tags": [],
             "ingredients": ingredients,
             "steps": steps,
+            **html_nut,
         }
 
     # 3. Plain-text fallback (if user pasted copied recipe text from page)
@@ -300,6 +353,11 @@ def parse_recipe_html_or_text(raw_content: str, source_url: str = "") -> dict[st
                 "tags": [],
                 "ingredients": txt_ings,
                 "steps": txt_steps,
+                "calories_per_serving": None,
+                "protein_g": None,
+                "carbs_g": None,
+                "fat_g": None,
+                "fiber_g": None,
             }
 
     raise ValueError(

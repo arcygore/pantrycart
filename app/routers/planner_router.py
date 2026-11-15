@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import get_current_user, utc_now_iso
 from app.database import get_db
+from app.routers.nutrition_router import estimate_single_food_macros
 from app.units import compute_grocery_packages, normalize_item_key
 
 router = APIRouter(prefix="/api/planner", tags=["planner"])
@@ -48,6 +49,11 @@ class CalendarSlotCreatePayload(BaseModel):
     servings_used: float = Field(default=1.0, gt=0, le=50)
     person_name: str = Field(default="", max_length=60)
     notes: str = Field(default="", max_length=200)
+    calories: Optional[float] = None
+    protein_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    fiber_g: Optional[float] = None
 
 
 class CalendarSlotUpdatePayload(BaseModel):
@@ -57,6 +63,18 @@ class CalendarSlotUpdatePayload(BaseModel):
     person_name: Optional[str] = None
     custom_title: Optional[str] = None
     notes: Optional[str] = None
+    calories: Optional[float] = None
+    protein_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    fiber_g: Optional[float] = None
+
+
+def _portion_scale_factor(servings: Optional[float], custom_portions: Optional[float]) -> float:
+    srv = float(servings or 1.0)
+    if custom_portions and custom_portions > 0:
+        return srv / float(custom_portions)
+    return 1.0
 
 
 @router.get("")
@@ -65,7 +83,8 @@ def get_meal_plan(user: dict = Depends(get_current_user)):
         rows = conn.execute(
             """
             SELECT mp.id, mp.recipe_id, mp.scale, mp.day_label, mp.notes, mp.created_at,
-                   r.title, r.servings, r.prep_minutes, r.cook_minutes, r.tags_json, r.image_url,
+                   r.title, r.servings, r.custom_portions, r.prep_minutes, r.cook_minutes, r.tags_json, r.image_url,
+                   r.calories_per_serving, r.protein_g, r.carbs_g, r.fat_g, r.fiber_g,
                    u.display_name AS added_by_name,
                    COALESCE((SELECT SUM(cs.servings_used) FROM meal_calendar_slots cs WHERE cs.plan_item_id = mp.id), 0.0) AS allocated_servings
             FROM meal_plan_items mp
@@ -76,9 +95,16 @@ def get_meal_plan(user: dict = Depends(get_current_user)):
         ).fetchall()
     result = []
     for r in rows:
-        eff = round(r["servings"] * r["scale"], 1)
+        base_portions = float(r["custom_portions"]) if (r["custom_portions"] and r["custom_portions"] > 0) else float(r["servings"] or 1.0)
+        eff = round(base_portions * r["scale"], 1)
         alloc = round(float(r["allocated_servings"] or 0.0), 1)
         rem = max(0.0, round(eff - alloc, 1))
+        pf = _portion_scale_factor(r["servings"], r["custom_portions"])
+        cal = round(r["calories_per_serving"] * pf) if r["calories_per_serving"] is not None else None
+        pro = round(r["protein_g"] * pf, 1) if r["protein_g"] is not None else None
+        carb = round(r["carbs_g"] * pf, 1) if r["carbs_g"] is not None else None
+        fat = round(r["fat_g"] * pf, 1) if r["fat_g"] is not None else None
+        fib = round(r["fiber_g"] * pf, 1) if r["fiber_g"] is not None else None
         result.append(
             {
                 "id": r["id"],
@@ -90,9 +116,15 @@ def get_meal_plan(user: dict = Depends(get_current_user)):
                 "title": r["title"],
                 "image_url": r["image_url"] or "",
                 "base_servings": r["servings"],
+                "custom_portions": r["custom_portions"],
                 "effective_servings": eff,
                 "allocated_servings": alloc,
                 "remaining_servings": rem,
+                "calories_per_serving": cal,
+                "protein_g": pro,
+                "carbs_g": carb,
+                "fat_g": fat,
+                "fiber_g": fib,
                 "prep_minutes": r["prep_minutes"],
                 "cook_minutes": r["cook_minutes"],
                 "tags": json.loads(r["tags_json"] or "[]"),
@@ -163,7 +195,11 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
             """
             SELECT cs.id, cs.day_name, cs.meal_slot, cs.plan_item_id, cs.custom_title,
                    cs.servings_used, cs.person_name, cs.notes, cs.created_at,
-                   r.id AS recipe_id, r.title AS recipe_title
+                   cs.calories AS slot_cal, cs.protein_g AS slot_pro, cs.carbs_g AS slot_carb,
+                   cs.fat_g AS slot_fat, cs.fiber_g AS slot_fib, cs.logged_at,
+                   r.id AS recipe_id, r.title AS recipe_title,
+                   r.servings AS recipe_servings, r.custom_portions AS recipe_custom_portions,
+                   r.calories_per_serving, r.protein_g, r.carbs_g, r.fat_g, r.fiber_g
             FROM meal_calendar_slots cs
             LEFT JOIN meal_plan_items mp ON mp.id = cs.plan_item_id
             LEFT JOIN recipes r ON r.id = mp.recipe_id
@@ -194,6 +230,29 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
         display_title = s["recipe_title"] or s["custom_title"] or "Meal"
         if s["person_name"] and s["person_name"].strip():
             custom_people.add(s["person_name"].strip())
+
+        srv_used = float(s["servings_used"] or 1.0)
+        if s["slot_cal"] is not None:
+            cal = round(float(s["slot_cal"]))
+            pro = round(float(s["slot_pro"] or 0.0), 1)
+            carb = round(float(s["slot_carb"] or 0.0), 1)
+            fat = round(float(s["slot_fat"] or 0.0), 1)
+            fib = round(float(s["slot_fib"] or 0.0), 1)
+        elif s["recipe_id"] and s["calories_per_serving"] is not None:
+            pf = _portion_scale_factor(s["recipe_servings"], s["recipe_custom_portions"])
+            cal = round(float(s["calories_per_serving"]) * pf * srv_used)
+            pro = round(float(s["protein_g"] or 0.0) * pf * srv_used, 1)
+            carb = round(float(s["carbs_g"] or 0.0) * pf * srv_used, 1)
+            fat = round(float(s["fat_g"] or 0.0) * pf * srv_used, 1)
+            fib = round(float(s["fiber_g"] or 0.0) * pf * srv_used, 1)
+        else:
+            est = estimate_single_food_macros(display_title, srv_used)
+            cal = est["calories"]
+            pro = est["protein_g"]
+            carb = est["carbs_g"]
+            fat = est["fat_g"]
+            fib = est["fiber_g"]
+
         slots.append(
             {
                 "id": s["id"],
@@ -203,9 +262,15 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
                 "recipe_id": s["recipe_id"],
                 "title": display_title,
                 "custom_title": s["custom_title"] or "",
-                "servings_used": round(float(s["servings_used"] or 1.0), 2),
+                "servings_used": round(srv_used, 2),
                 "person_name": s["person_name"] or "",
                 "notes": s["notes"] or "",
+                "calories": cal,
+                "protein_g": pro,
+                "carbs_g": carb,
+                "fat_g": fat,
+                "fiber_g": fib,
+                "logged_at": s["logged_at"],
                 "created_at": s["created_at"],
             }
         )
@@ -264,8 +329,9 @@ def create_calendar_slot(payload: CalendarSlotCreatePayload, user: dict = Depend
         cur = conn.execute(
             """
             INSERT INTO meal_calendar_slots (
-                day_name, meal_slot, plan_item_id, custom_title, servings_used, person_name, notes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                day_name, meal_slot, plan_item_id, custom_title, servings_used, person_name, notes,
+                calories, protein_g, carbs_g, fat_g, fiber_g, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.day_name.strip(),
@@ -275,6 +341,11 @@ def create_calendar_slot(payload: CalendarSlotCreatePayload, user: dict = Depend
                 payload.servings_used,
                 payload.person_name.strip(),
                 payload.notes.strip(),
+                payload.calories,
+                payload.protein_g,
+                payload.carbs_g,
+                payload.fat_g,
+                payload.fiber_g,
                 now,
             ),
         )
@@ -288,19 +359,26 @@ def update_calendar_slot(slot_id: int, payload: CalendarSlotUpdatePayload, user:
         row = conn.execute("SELECT * FROM meal_calendar_slots WHERE id = ?", (slot_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Calendar slot not found")
+        fset = payload.model_fields_set
         day_name = payload.day_name.strip() if payload.day_name is not None else row["day_name"]
         meal_slot = payload.meal_slot.strip() if payload.meal_slot is not None else row["meal_slot"]
         servings_used = payload.servings_used if payload.servings_used is not None else row["servings_used"]
         person_name = payload.person_name.strip() if payload.person_name is not None else row["person_name"]
         custom_title = payload.custom_title.strip() if payload.custom_title is not None else row["custom_title"]
         notes = payload.notes.strip() if payload.notes is not None else row["notes"]
+        calories = payload.calories if "calories" in fset else row["calories"]
+        protein_g = payload.protein_g if "protein_g" in fset else row["protein_g"]
+        carbs_g = payload.carbs_g if "carbs_g" in fset else row["carbs_g"]
+        fat_g = payload.fat_g if "fat_g" in fset else row["fat_g"]
+        fiber_g = payload.fiber_g if "fiber_g" in fset else row["fiber_g"]
         conn.execute(
             """
             UPDATE meal_calendar_slots
-            SET day_name = ?, meal_slot = ?, servings_used = ?, person_name = ?, custom_title = ?, notes = ?
+            SET day_name = ?, meal_slot = ?, servings_used = ?, person_name = ?, custom_title = ?, notes = ?,
+                calories = ?, protein_g = ?, carbs_g = ?, fat_g = ?, fiber_g = ?
             WHERE id = ?
             """,
-            (day_name, meal_slot, servings_used, person_name, custom_title, notes, slot_id),
+            (day_name, meal_slot, servings_used, person_name, custom_title, notes, calories, protein_g, carbs_g, fat_g, fiber_g, slot_id),
         )
     return {"ok": True}
 

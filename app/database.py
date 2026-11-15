@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     is_admin INTEGER NOT NULL DEFAULT 0,
+    shortcut_verified INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -105,6 +106,12 @@ CREATE TABLE IF NOT EXISTS recipes (
     tags_json TEXT NOT NULL DEFAULT '[]',
     steps_json TEXT NOT NULL DEFAULT '[]',
     notes TEXT NOT NULL DEFAULT '',
+    calories_per_serving REAL,
+    protein_g REAL,
+    carbs_g REAL,
+    fat_g REAL,
+    fiber_g REAL,
+    custom_portions REAL,
     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -141,7 +148,34 @@ CREATE TABLE IF NOT EXISTS meal_calendar_slots (
     servings_used REAL NOT NULL DEFAULT 1.0,
     person_name TEXT NOT NULL DEFAULT 'Everyone',
     notes TEXT NOT NULL DEFAULT '',
+    calories REAL,
+    protein_g REAL,
+    carbs_g REAL,
+    fat_g REAL,
+    fiber_g REAL,
+    logged_at TEXT,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kroger_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    client_id TEXT NOT NULL DEFAULT '',
+    client_secret TEXT NOT NULL DEFAULT '',
+    redirect_uri TEXT NOT NULL DEFAULT '',
+    location_id TEXT NOT NULL DEFAULT '',
+    location_name TEXT NOT NULL DEFAULT '',
+    location_address TEXT NOT NULL DEFAULT '',
+    location_chain TEXT NOT NULL DEFAULT 'Kroger',
+    linked_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kroger_user_tokens (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT NOT NULL DEFAULT '',
+    expires_at INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS shopping_lists (
@@ -530,6 +564,50 @@ def _run_migrations(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE shopping_lists ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
         conn.execute("UPDATE shopping_lists SET sort_order = id WHERE sort_order = 0")
 
+    user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "shortcut_verified" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN shortcut_verified INTEGER NOT NULL DEFAULT 0")
+
+    recipe_cols = {r["name"] for r in conn.execute("PRAGMA table_info(recipes)").fetchall()}
+    for col_name, col_type in [
+        ("calories_per_serving", "REAL"),
+        ("protein_g", "REAL"),
+        ("carbs_g", "REAL"),
+        ("fat_g", "REAL"),
+        ("fiber_g", "REAL"),
+        ("custom_portions", "REAL"),
+    ]:
+        if col_name not in recipe_cols:
+            conn.execute(f"ALTER TABLE recipes ADD COLUMN {col_name} {col_type}")
+
+    slot_cols = {r["name"] for r in conn.execute("PRAGMA table_info(meal_calendar_slots)").fetchall()}
+    for col_name, col_type in [
+        ("calories", "REAL"),
+        ("protein_g", "REAL"),
+        ("carbs_g", "REAL"),
+        ("fat_g", "REAL"),
+        ("fiber_g", "REAL"),
+        ("logged_at", "TEXT"),
+    ]:
+        if col_name not in slot_cols:
+            conn.execute(f"ALTER TABLE meal_calendar_slots ADD COLUMN {col_name} {col_type}")
+
+    # Seed default nutrition on sample recipes if still NULL
+    conn.execute(
+        """
+        UPDATE recipes
+        SET calories_per_serving = 540, protein_g = 46, carbs_g = 11, fat_g = 34, fiber_g = 2
+        WHERE title = 'Weeknight Creamy Tuscan Chicken' AND calories_per_serving IS NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE recipes
+        SET calories_per_serving = 510, protein_g = 35, carbs_g = 42, fat_g = 22, fiber_g = 9
+        WHERE title = 'One-Pot Black Bean & Beef Taco Skillet' AND calories_per_serving IS NULL
+        """
+    )
+
 
 def init_db():
     with get_db() as conn:
@@ -649,6 +727,11 @@ def _seed_sample_recipes(conn: sqlite3.Connection, now: str):
             "servings": 4,
             "prep_minutes": 10,
             "cook_minutes": 20,
+            "calories_per_serving": 540,
+            "protein_g": 46,
+            "carbs_g": 11,
+            "fat_g": 34,
+            "fiber_g": 2,
             "tags": ["Dinner", "30-Minute", "One-Pan"],
             "steps": [
                 "Season 1.5 lbs chicken breasts with kosher salt, black pepper, and Italian seasoning.",
@@ -679,6 +762,11 @@ def _seed_sample_recipes(conn: sqlite3.Connection, now: str):
             "servings": 4,
             "prep_minutes": 10,
             "cook_minutes": 20,
+            "calories_per_serving": 510,
+            "protein_g": 35,
+            "carbs_g": 42,
+            "fat_g": 22,
+            "fiber_g": 9,
             "tags": ["Dinner", "Mexican", "Easy"],
             "steps": [
                 "Heat 1 tbsp olive oil in a large deep skillet over medium-high heat. Add 1 diced yellow onion and 1 diced bell pepper; cook 4 minutes.",
@@ -712,8 +800,10 @@ def _seed_sample_recipes(conn: sqlite3.Connection, now: str):
             """
             INSERT INTO recipes (
                 title, description, servings, prep_minutes, cook_minutes,
-                source_url, image_url, tags_json, steps_json, notes, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, '', '', ?, ?, '', ?, ?)
+                source_url, image_url, tags_json, steps_json, notes,
+                calories_per_serving, protein_g, carbs_g, fat_g, fiber_g,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, '', '', ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 r["title"],
@@ -723,6 +813,11 @@ def _seed_sample_recipes(conn: sqlite3.Connection, now: str):
                 r["cook_minutes"],
                 json.dumps(r["tags"]),
                 json.dumps(r["steps"]),
+                r.get("calories_per_serving"),
+                r.get("protein_g"),
+                r.get("carbs_g"),
+                r.get("fat_g"),
+                r.get("fiber_g"),
                 now,
                 now,
             ),

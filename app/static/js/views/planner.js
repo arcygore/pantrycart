@@ -1,10 +1,38 @@
 import { api } from "../api.js";
+import {
+  isShortcutReady,
+  launchShortcutLog,
+  openLoseItQuickCardModal,
+  openShortcutSetupModal,
+  renderMacroStrip,
+  setShortcutVerifiedFlag,
+} from "../nutrition_ui.js";
 import { esc, fmtQty, openModal, toast } from "../utils.js";
 
 const CALENDAR_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MEAL_SLOTS = ["Breakfast", "Lunch", "Dinner", "Snacks"];
 
 export async function renderPlannerView(container, state, navigate) {
+  if (state.shortcutJustVerified) {
+    state.shortcutJustVerified = false;
+    try {
+      await setShortcutVerifiedFlag(state, true);
+      toast("iOS Shortcut verified! 'Log Meals' buttons are now unlocked.");
+    } catch {
+      // Ignore transient failure
+    }
+  } else {
+    try {
+      const scStatus = await api("/api/nutrition/shortcut-status");
+      if (state.user) state.user.shortcut_verified = Boolean(scStatus.shortcut_verified);
+      if (scStatus.shortcut_verified) {
+        localStorage.setItem("pantrycart_shortcut_verified", "1");
+      }
+    } catch {
+      // Ignore transient check
+    }
+  }
+
   let planItems = await api("/api/planner");
   let calendarData = await api("/api/planner/calendar");
   let recipes = await api("/api/recipes");
@@ -12,12 +40,45 @@ export async function renderPlannerView(container, state, navigate) {
   let templateItems = await api("/api/lists/template/items");
   let search = "";
   let showCalendar = state.showPlannerCalendar !== false;
+  let personFilter = state.plannerPersonFilter || "ALL";
 
   async function refreshPlannerState() {
     [planItems, calendarData] = await Promise.all([
       api("/api/planner"),
       api("/api/planner/calendar"),
     ]);
+  }
+
+  function filterSlotsForPerson(daySlots) {
+    if (personFilter === "ALL") return daySlots;
+    return daySlots.filter((s) => !s.person_name || s.person_name === "Everyone" || s.person_name === personFilter);
+  }
+
+  function sumDayMacros(daySlots) {
+    let cal = 0;
+    let pro = 0;
+    let carb = 0;
+    let fat = 0;
+    let fib = 0;
+    let hasAny = false;
+    for (const s of daySlots) {
+      if (s.calories !== null && s.calories !== undefined) {
+        hasAny = true;
+        cal += Number(s.calories) || 0;
+        pro += Number(s.protein_g) || 0;
+        carb += Number(s.carbs_g) || 0;
+        fat += Number(s.fat_g) || 0;
+        fib += Number(s.fiber_g) || 0;
+      }
+    }
+    return {
+      hasAny,
+      calories: Math.round(cal),
+      protein_g: Math.round(pro * 10) / 10,
+      carbs_g: Math.round(carb * 10) / 10,
+      fat_g: Math.round(fat * 10) / 10,
+      fiber_g: Math.round(fib * 10) / 10,
+    };
   }
 
   function render() {
@@ -28,6 +89,8 @@ export async function renderPlannerView(container, state, navigate) {
     });
 
     const slots = calendarData?.slots || [];
+    const members = calendarData?.household_members || [];
+    const shortcutOk = isShortcutReady(state);
 
     container.innerHTML = `
       <div class="page-header">
@@ -78,12 +141,18 @@ export async function renderPlannerView(container, state, navigate) {
                                 : `${fmtQty(rem)}x of ${fmtQty(eff)} servings left`}
                             </span>
                           </div>
-                          <div class="small muted">
-                            Total batch: ${fmtQty(eff)} servings ${p.added_by_name ? `· Added by ${esc(p.added_by_name)}` : ""}
+                          <div class="row-wrap" style="gap: 8px; margin-top: 3px;">
+                            <span class="small muted">
+                              Total batch: ${fmtQty(eff)} portions ${p.added_by_name ? `· Added by ${esc(p.added_by_name)}` : ""}
+                            </span>
+                            ${renderMacroStrip(p, true)}
                           </div>
                         </div>
                       </div>
-                      <div class="row" style="gap: 6px;">
+                      <div class="row-wrap" style="gap: 6px;">
+                        <button class="btn btn-sm plan-loseit-btn" data-recipe-id="${p.recipe_id}" type="button" title="View Lose It! Quick Card & Portion Calculator">
+                          📋 Lose It! Card
+                        </button>
                         <button class="btn btn-sm plan-schedule-btn" data-plan-id="${p.id}" type="button" title="Place servings on a day/meal slot">
                           + Place on Day
                         </button>
@@ -100,19 +169,19 @@ export async function renderPlannerView(container, state, navigate) {
           `}
         </div>
 
-        <!-- 2. Optional Weekly Meal & Snack Calendar (FB-11) -->
+        <!-- 2. Optional Weekly Meal & Leftover Calendar (FB-11 + FB-14) -->
         <div class="card stack-md">
           <div class="row-wrap" style="justify-content: space-between;">
             <div>
               <div class="row" style="gap: 8px;">
-                <h2 style="margin: 0; font-size: 1.08rem;">Weekly Meal &amp; Leftover Calendar</h2>
+                <h2 style="margin: 0; font-size: 1.08rem;">Weekly Meal, Macro &amp; Leftover Calendar</h2>
                 <span class="badge">Optional</span>
               </div>
               <p class="small muted" style="margin: 2px 0 0;">
-                Plan Breakfast, Lunch, Dinner &amp; Snacks by day. Assign different leftovers to different people or pull snacks from your grocery list.
+                Plan Breakfast, Lunch, Dinner &amp; Snacks by day, assign leftovers per person, and log macros to Apple Health via iOS Shortcut.
               </p>
             </div>
-            <div class="row" style="gap: 8px;">
+            <div class="row-wrap" style="gap: 8px;">
               ${slots.length ? `<button class="btn btn-sm btn-danger" id="clear-calendar-btn" type="button">Clear Calendar</button>` : ""}
               <button class="btn btn-sm" id="toggle-calendar-btn" type="button">
                 ${showCalendar ? "Hide Calendar" : `Show Calendar (${slots.length})`}
@@ -121,17 +190,77 @@ export async function renderPlannerView(container, state, navigate) {
           </div>
 
           ${showCalendar ? `
+            <!-- 2-Step iOS Shortcut Verification Banner -->
+            <div class="step-wizard-banner ${shortcutOk ? "ready" : ""}">
+              <div>
+                ${shortcutOk ? `
+                  <div style="font-weight: 800; color: var(--primary); font-size: 0.9rem;">
+                    ✓ Step 2 Active: "PantryCart Log Macros" iOS Shortcut Ready
+                  </div>
+                  <div class="small muted">
+                    Press <strong>📲 Log Meals</strong> on any day card below to log that day's calories &amp; macros directly on iPhone/iPad.
+                  </div>
+                ` : `
+                  <div style="font-weight: 800; font-size: 0.9rem;">
+                    Step 1 of 2: Set up &amp; Verify iOS Shortcut to Unlock "Log Meals"
+                  </div>
+                  <div class="small muted">
+                    <strong>Log Meals</strong> buttons stay grayed out (🔒) until your device's shortcut is confirmed.
+                  </div>
+                `}
+              </div>
+              <div class="row-wrap" style="gap: 8px;">
+                ${members.length ? `
+                  <select class="select" id="person-macro-filter" style="width: auto; min-height: 34px; padding: 4px 10px;" title="Filter daily calorie totals & logging by person">
+                    <option value="ALL" ${personFilter === "ALL" ? "selected" : ""}>Show Totals: Everyone</option>
+                    ${members.map((m) => `<option value="${esc(m)}" ${personFilter === m ? "selected" : ""}>Totals for: ${esc(m)}</option>`).join("")}
+                  </select>
+                ` : ""}
+                <button class="btn btn-sm ${shortcutOk ? "" : "btn-primary"}" id="setup-shortcut-btn" type="button">
+                  ${shortcutOk ? "⚙️ Shortcut Setup / Test" : "Step 1: Setup & Verify Shortcut"}
+                </button>
+              </div>
+            </div>
+
             <div class="calendar-grid">
               ${CALENDAR_DAYS.map((day) => {
-                const daySlots = slots.filter((s) => s.day_name === day);
+                const rawDaySlots = slots.filter((s) => s.day_name === day);
+                const activeDaySlots = filterSlotsForPerson(rawDaySlots);
+                const totals = sumDayMacros(activeDaySlots);
+                const allDayLogged = activeDaySlots.length > 0 && activeDaySlots.every((s) => Boolean(s.logged_at));
+                const logBtnClass = !shortcutOk
+                  ? "btn-locked"
+                  : (allDayLogged ? "btn-log-done" : "btn-log-ready");
+                const logBtnLabel = !shortcutOk
+                  ? "🔒 Log Meals"
+                  : (allDayLogged ? "✓ Logged" : "📲 Log Meals");
+
                 return `
                   <div class="day-card">
                     <div class="day-card-header">
                       <span>${esc(day)}</span>
-                      <span class="small muted" style="font-weight: 600;">${daySlots.length ? `${daySlots.length} planned` : "Open"}</span>
+                      <div class="row" style="gap: 6px;">
+                        ${activeDaySlots.length > 0 ? `
+                          <button class="btn btn-sm log-day-btn ${logBtnClass}" data-day="${esc(day)}" type="button"
+                            style="min-height: 26px; padding: 2px 9px; font-size: 0.76rem;"
+                            title="${shortcutOk ? `Send ${day}'s macros to iOS Shortcut` : "Complete Step 1 Shortcut Setup to unlock"}">
+                            ${logBtnLabel}
+                          </button>
+                        ` : `<span class="small muted" style="font-weight: 600;">Open</span>`}
+                      </div>
                     </div>
+
+                    ${totals.hasAny ? `
+                      <div class="day-macro-bar">
+                        <span class="macro-chip cal">${totals.calories} kcal</span>
+                        <span class="macro-chip pro">${fmtQty(totals.protein_g)}g P</span>
+                        <span class="macro-chip">${fmtQty(totals.carbs_g)}g C</span>
+                        <span class="macro-chip">${fmtQty(totals.fat_g)}g F</span>
+                      </div>
+                    ` : ""}
+
                     ${MEAL_SLOTS.map((mealSlot) => {
-                      const slotItems = daySlots.filter((s) => s.meal_slot === mealSlot);
+                      const slotItems = rawDaySlots.filter((s) => s.meal_slot === mealSlot);
                       return `
                         <div class="meal-slot-section">
                           <div class="meal-slot-header">
@@ -148,9 +277,23 @@ export async function renderPlannerView(container, state, navigate) {
                                   <span style="font-weight: 600;">${esc(entry.title)}</span>
                                   ${entry.person_name ? `<span class="person-tag">${esc(entry.person_name)}</span>` : ""}
                                 </div>
+                                ${entry.calories ? `
+                                  <div class="small muted" style="font-size: 0.72rem; margin-top: 2px;">
+                                    ${Math.round(entry.calories)} kcal · ${fmtQty(entry.protein_g)}g P · ${fmtQty(entry.carbs_g)}g C · ${fmtQty(entry.fat_g)}g F
+                                    ${entry.logged_at ? `<span style="color: var(--primary); font-weight: 700;"> · ✓ Logged</span>` : ""}
+                                  </div>
+                                ` : ""}
                                 ${entry.notes ? `<div class="small muted" style="font-size: 0.74rem; margin-top: 2px;">${esc(entry.notes)}</div>` : ""}
                               </div>
-                              <button class="btn btn-sm del-cal-slot-btn" data-id="${entry.id}" type="button" style="min-height: 22px; padding: 0 5px; font-size: 0.74rem; border: none; background: transparent; color: var(--text-muted);" title="Remove from slot">✕</button>
+                              <div class="row" style="gap: 2px; flex-shrink: 0;">
+                                <button class="btn btn-sm log-slot-btn ${shortcutOk ? (entry.logged_at ? "btn-log-done" : "btn-log-ready") : "btn-locked"}"
+                                  data-slot-id="${entry.id}" type="button"
+                                  style="min-height: 22px; padding: 0 6px; font-size: 0.72rem;"
+                                  title="${shortcutOk ? "Log this meal via iOS Shortcut" : "Setup Shortcut in Step 1 first"}">
+                                  ${shortcutOk ? (entry.logged_at ? "✓" : "📲") : "🔒"}
+                                </button>
+                                <button class="btn btn-sm del-cal-slot-btn" data-id="${entry.id}" type="button" style="min-height: 22px; padding: 0 5px; font-size: 0.74rem; border: none; background: transparent; color: var(--text-muted);" title="Remove from slot">✕</button>
+                              </div>
                             </div>
                           `).join("")}
                         </div>
@@ -176,11 +319,12 @@ export async function renderPlannerView(container, state, navigate) {
                 ${r.image_url ? `<img class="recipe-cover" src="${esc(r.image_url)}" alt="${esc(r.title)}" loading="lazy" />` : ""}
                 <div class="row" style="justify-content: space-between; align-items: flex-start;">
                   <h3>${esc(r.title)}</h3>
-                  <span class="badge">${fmtQty(r.servings)} srv</span>
+                  <span class="badge">${fmtQty(r.custom_portions || r.servings)} srv</span>
                 </div>
                 ${r.description ? `<p class="small muted" style="margin: 0;">${esc(r.description)}</p>` : ""}
                 <div class="row-wrap">
                   ${r.tags.map((t) => `<span class="badge badge-primary">${esc(t)}</span>`).join("")}
+                  ${renderMacroStrip(r, true)}
                 </div>
                 <div class="row" style="margin-top: auto; padding-top: 6px; justify-content: space-between;">
                   <span class="small muted">${r.ingredients.length} ingredients</span>
@@ -239,7 +383,7 @@ export async function renderPlannerView(container, state, navigate) {
               <select class="select" name="plan_item_id" required>
                 ${planItems.map((p) => `
                   <option value="${p.id}" ${p.id === defaultPlanItemId ? "selected" : ""}>
-                    ${esc(p.title)} (${fmtQty(p.remaining_servings)}x of ${fmtQty(p.effective_servings)} servings remaining)
+                    ${esc(p.title)} (${fmtQty(p.remaining_servings)}x of ${fmtQty(p.effective_servings)} left${p.calories_per_serving ? ` · ${Math.round(p.calories_per_serving)} kcal` : ""})
                   </option>
                 `).join("")}
               </select>
@@ -366,6 +510,90 @@ export async function renderPlannerView(container, state, navigate) {
       const el = document.getElementById("planner-search");
       el?.focus();
       el?.setSelectionRange(search.length, search.length);
+    });
+
+    document.getElementById("person-macro-filter")?.addEventListener("change", (e) => {
+      personFilter = e.target.value;
+      state.plannerPersonFilter = personFilter;
+      render();
+    });
+
+    document.getElementById("setup-shortcut-btn")?.addEventListener("click", () => {
+      openShortcutSetupModal(state, () => render());
+    });
+
+    document.querySelectorAll(".plan-loseit-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const r = recipes.find((x) => x.id === Number(btn.dataset.recipeId));
+        if (!r) return;
+        openLoseItQuickCardModal(r, state, {
+          onSaved: async () => {
+            recipes = await api("/api/recipes");
+            await refreshPlannerState();
+            render();
+          },
+        });
+      });
+    });
+
+    document.querySelectorAll(".log-day-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!isShortcutReady(state)) {
+          toast("Complete Step 1 Shortcut Setup first to unlock Log Meals!", true);
+          openShortcutSetupModal(state, () => render());
+          return;
+        }
+        const day = btn.dataset.day;
+        const daySlots = filterSlotsForPerson((calendarData?.slots || []).filter((s) => s.day_name === day));
+        const totals = sumDayMacros(daySlots);
+        await api("/api/nutrition/mark-logged", {
+          method: "POST",
+          body: { slot_ids: daySlots.map((s) => s.id) },
+        });
+        await refreshPlannerState();
+        render();
+        toast(`Sending ${day}'s macros (${totals.calories} kcal) to iOS Shortcut...`);
+        launchShortcutLog({
+          mode: "log",
+          day,
+          person: personFilter === "ALL" ? "Everyone" : personFilter,
+          meals: daySlots.map((s) => s.title).join(", "),
+          calories: totals.calories,
+          protein_g: totals.protein_g,
+          carbs_g: totals.carbs_g,
+          fat_g: totals.fat_g,
+          fiber_g: totals.fiber_g,
+        });
+      });
+    });
+
+    document.querySelectorAll(".log-slot-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!isShortcutReady(state)) {
+          toast("Complete Step 1 Shortcut Setup first!", true);
+          openShortcutSetupModal(state, () => render());
+          return;
+        }
+        const slotId = Number(btn.dataset.slotId);
+        const entry = (calendarData?.slots || []).find((s) => s.id === slotId);
+        if (!entry) return;
+        await api("/api/nutrition/mark-logged", {
+          method: "POST",
+          body: { slot_ids: [slotId] },
+        });
+        await refreshPlannerState();
+        render();
+        launchShortcutLog({
+          mode: "log",
+          day: entry.day_name,
+          meals: entry.title,
+          calories: Math.round(entry.calories || 0),
+          protein_g: Number(entry.protein_g || 0),
+          carbs_g: Number(entry.carbs_g || 0),
+          fat_g: Number(entry.fat_g || 0),
+          fiber_g: Number(entry.fiber_g || 0),
+        });
+      });
     });
 
     document.querySelectorAll(".add-plan-btn").forEach((btn) => {

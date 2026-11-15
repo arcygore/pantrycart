@@ -1,4 +1,5 @@
 import { api, apiUpload } from "../api.js";
+import { openLoseItQuickCardModal, renderMacroStrip } from "../nutrition_ui.js";
 import { esc, fmtQty, openModal, toast } from "../utils.js";
 
 export async function renderRecipesView(container, state) {
@@ -61,6 +62,7 @@ export async function renderRecipesView(container, state) {
                 ${r.tags.map((t) => `<span class="badge badge-primary">${esc(t)}</span>`).join("")}
                 ${(r.prep_minutes || r.cook_minutes) ? `<span class="badge">${(r.prep_minutes || 0) + (r.cook_minutes || 0)} min</span>` : ""}
               </div>
+              ${renderMacroStrip(r, true)}
               <div class="row" style="margin-top: auto; padding-top: 8px; justify-content: space-between;">
                 <button class="btn btn-sm open-recipe-btn" data-id="${r.id}">View &amp; Cook</button>
                 <button class="btn btn-primary btn-sm add-week-btn" data-id="${r.id}">+ This Week</button>
@@ -245,10 +247,22 @@ export async function renderRecipesView(container, state) {
   }
 
   function renderDetail(r) {
+    const portionCount = Number(r.custom_portions) || Number(r.servings) || 1;
+    const hasMacros = r.calories_per_serving !== null && r.calories_per_serving !== undefined;
+    const ratio = (Number(r.servings) || 1) / portionCount;
+    const perPortionMacros = hasMacros ? {
+      calories_per_serving: r.calories_per_serving * ratio,
+      protein_g: (r.protein_g || 0) * ratio,
+      carbs_g: (r.carbs_g || 0) * ratio,
+      fat_g: (r.fat_g || 0) * ratio,
+      fiber_g: (r.fiber_g || 0) * ratio,
+    } : null;
+
     container.innerHTML = `
       <div class="page-header">
         <button class="btn btn-sm" id="back-recipes-btn">← All Recipes</button>
-        <div class="row">
+        <div class="row-wrap">
+          <button class="btn btn-sm" id="detail-loseit-btn">📋 Lose It! / Macro Card</button>
           <button class="btn btn-sm" id="edit-recipe-btn">Edit</button>
           <button class="btn btn-primary btn-sm" id="detail-add-week-btn">+ Add to This Week</button>
         </div>
@@ -269,11 +283,16 @@ export async function renderRecipesView(container, state) {
           </div>
         </div>
         <div class="row-wrap">
-          <span class="badge">${fmtQty(r.servings * cookScale)} servings</span>
+          <span class="badge">${fmtQty(r.servings * cookScale)} servings${r.custom_portions ? ` (divided into ${fmtQty(r.custom_portions)} portions)` : ""}</span>
           ${r.prep_minutes ? `<span class="badge">Prep: ${r.prep_minutes}m</span>` : ""}
           ${r.cook_minutes ? `<span class="badge">Cook: ${r.cook_minutes}m</span>` : ""}
           ${r.tags.map((t) => `<span class="badge badge-primary">${esc(t)}</span>`).join("")}
           ${r.source_url ? `<a class="badge" href="${esc(r.source_url)}" target="_blank" rel="noopener">Original Source ↗</a>` : ""}
+        </div>
+        <div class="row-wrap" style="justify-content: space-between; align-items: center;">
+          ${hasMacros
+            ? `<div class="row-wrap" style="gap: 8px;"><span class="small muted" style="font-weight: 700;">Per Portion:</span>${renderMacroStrip(perPortionMacros)}</div>`
+            : `<button class="btn btn-sm" id="calc-detail-macros-btn" type="button">✨ Auto-Calculate Macros from Ingredients</button>`}
         </div>
       </div>
 
@@ -316,6 +335,24 @@ export async function renderRecipesView(container, state) {
     document.getElementById("back-recipes-btn").addEventListener("click", () => {
       selectedRecipe = null;
       render();
+    });
+
+    document.getElementById("detail-loseit-btn")?.addEventListener("click", () => {
+      openLoseItQuickCardModal(r, state, {
+        onSaved: async (updated) => {
+          recipes = await api("/api/recipes");
+          selectedRecipe = recipes.find((x) => x.id === r.id) || updated;
+          render();
+        },
+      });
+    });
+
+    document.getElementById("calc-detail-macros-btn")?.addEventListener("click", async () => {
+      await api(`/api/nutrition/estimate-recipe/${r.id}`, { method: "POST" });
+      recipes = await api("/api/recipes");
+      selectedRecipe = recipes.find((x) => x.id === r.id) || selectedRecipe;
+      render();
+      toast("Calculated estimated macros!");
     });
 
     document.getElementById("edit-recipe-btn").addEventListener("click", () => openRecipeEditor(r, false));
@@ -402,6 +439,38 @@ export async function renderRecipesView(container, state) {
           <label class="field-label">Cooking Steps (one step per line)</label>
           <textarea class="textarea" name="steps_text" style="min-height: 140px;" placeholder="Season chicken with salt and pepper.&#10;Sear in skillet 5 minutes per side.">${esc(stepsText)}</textarea>
         </div>
+        <div class="card stack-sm" style="background: var(--bg); padding: 12px;">
+          <div class="row-wrap" style="justify-content: space-between;">
+            <span class="field-label" style="margin: 0;">Nutrition per Recipe Serving (Optional — auto-scraped when available)</span>
+            <button type="button" class="btn btn-sm" id="estimate-editor-macros-btn">✨ Estimate from Ingredients</button>
+          </div>
+          <div class="row-wrap" style="gap: 8px;">
+            <div style="width: 95px;">
+              <label class="small muted">Calories</label>
+              <input class="input" name="calories_per_serving" type="number" step="1" min="0" value="${esc(recipe?.calories_per_serving ?? "")}" />
+            </div>
+            <div style="width: 85px;">
+              <label class="small muted">Protein (g)</label>
+              <input class="input" name="protein_g" type="number" step="0.1" min="0" value="${esc(recipe?.protein_g ?? "")}" />
+            </div>
+            <div style="width: 85px;">
+              <label class="small muted">Carbs (g)</label>
+              <input class="input" name="carbs_g" type="number" step="0.1" min="0" value="${esc(recipe?.carbs_g ?? "")}" />
+            </div>
+            <div style="width: 85px;">
+              <label class="small muted">Fat (g)</label>
+              <input class="input" name="fat_g" type="number" step="0.1" min="0" value="${esc(recipe?.fat_g ?? "")}" />
+            </div>
+            <div style="width: 85px;">
+              <label class="small muted">Fiber (g)</label>
+              <input class="input" name="fiber_g" type="number" step="0.1" min="0" value="${esc(recipe?.fiber_g ?? "")}" />
+            </div>
+            <div style="width: 115px;">
+              <label class="small muted">Custom Portions</label>
+              <input class="input" name="custom_portions" type="number" step="0.5" min="0.5" value="${esc(recipe?.custom_portions ?? "")}" placeholder="e.g. 5" />
+            </div>
+          </div>
+        </div>
         <div>
           <label class="field-label">Notes</label>
           <input class="input" name="notes" value="${esc(recipe?.notes || "")}" placeholder="Kids loved this, double sauce next time..." />
@@ -422,6 +491,23 @@ export async function renderRecipesView(container, state) {
         toast("Recipe deleted");
       });
 
+      document.getElementById("estimate-editor-macros-btn")?.addEventListener("click", async () => {
+        const f = document.getElementById("recipe-editor-form");
+        const est = await api("/api/nutrition/estimate-text", {
+          method: "POST",
+          body: {
+            ingredients_text: f.ingredients_text.value,
+            servings: Number(f.servings.value) || 4,
+          },
+        });
+        f.calories_per_serving.value = est.calories_per_serving ?? "";
+        f.protein_g.value = est.protein_g ?? "";
+        f.carbs_g.value = est.carbs_g ?? "";
+        f.fat_g.value = est.fat_g ?? "";
+        f.fiber_g.value = est.fiber_g ?? "";
+        toast("Estimated per-serving macros from ingredients!");
+      });
+
       document.getElementById("recipe-editor-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const f = e.target;
@@ -439,6 +525,7 @@ export async function renderRecipesView(container, state) {
           .map((t) => t.trim())
           .filter(Boolean);
 
+        const optFloat = (inp) => (inp && inp.value !== "" ? Number(inp.value) : null);
         const body = {
           title: f.title.value.trim(),
           description: f.description.value.trim(),
@@ -450,6 +537,12 @@ export async function renderRecipesView(container, state) {
           tags,
           steps,
           notes: f.notes.value.trim(),
+          calories_per_serving: optFloat(f.calories_per_serving),
+          protein_g: optFloat(f.protein_g),
+          carbs_g: optFloat(f.carbs_g),
+          fat_g: optFloat(f.fat_g),
+          fiber_g: optFloat(f.fiber_g),
+          custom_portions: optFloat(f.custom_portions),
           ingredients,
         };
 
