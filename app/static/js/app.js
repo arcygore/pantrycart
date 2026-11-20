@@ -10,12 +10,14 @@ import { renderStoresView } from "./views/stores.js";
 
 const NAV_ITEMS = [
   { id: "lists", label: "Lists", icon: ICONS.list },
-  { id: "planner", label: "This Week", icon: ICONS.calendar },
+  { id: "planner", label: "This Week", mobileLabel: "Plan", icon: ICONS.calendar },
   { id: "recipes", label: "Recipes", icon: ICONS.book },
   { id: "pantry", label: "Pantry", icon: ICONS.pantry },
   { id: "stores", label: "Stores", icon: ICONS.store },
   { id: "settings", label: "Settings", icon: ICONS.settings },
 ];
+
+const MOBILE_NAV_ITEMS = NAV_ITEMS.filter((i) => i.id !== "settings");
 
 const state = {
   user: null,
@@ -136,7 +138,7 @@ function renderShell() {
           <span style="display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;">
             <span class="badge">@${esc(state.user.username)}</span>
             ${state.user.is_guest ? `<span class="badge badge-accent">Guest</span>` : ""}
-            <span class="badge" style="opacity: 0.75;" title="App Version">v1.4</span>
+            <span class="badge" style="opacity: 0.75;" title="App Version">v1.5</span>
             <button type="button" class="btn btn-sm theme-toggle-btn" style="padding: 2px 8px; min-height: 24px; font-size: 0.74rem;"></button>
           </span>
         </div>
@@ -149,18 +151,18 @@ function renderShell() {
             <span>PantryCart</span>
           </div>
           <span class="row" style="gap: 6px; align-items: center;">
-            <button type="button" class="btn btn-sm theme-toggle-btn" style="padding: 3px 9px; min-height: 28px; font-size: 0.78rem;"></button>
-            <span class="user-pill">${esc(state.user.display_name)}${state.user.is_guest ? " (Guest)" : ""}</span>
+            <button type="button" class="btn btn-sm theme-toggle-btn" style="padding: 3px 9px; min-height: 30px; font-size: 0.78rem;"></button>
+            <button type="button" class="btn btn-sm mobile-settings-btn ${state.view === "settings" ? "active" : ""}" data-nav="settings" aria-label="Settings" title="Settings &amp; Account (${esc(state.user.display_name)})">${ICONS.settings}</button>
           </span>
         </header>
         <div id="view-root"></div>
       </main>
 
       <nav class="bottom-nav">
-        ${NAV_ITEMS.map((item) => `
+        ${MOBILE_NAV_ITEMS.map((item) => `
           <button class="nav-btn ${state.view === item.id ? "active" : ""}" data-nav="${item.id}">
             ${item.icon}
-            <span>${item.label}</span>
+            <span>${item.mobileLabel || item.label}</span>
           </button>
         `).join("")}
       </nav>

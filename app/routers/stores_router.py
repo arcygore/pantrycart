@@ -248,10 +248,11 @@ def update_store(store_id: int, payload: StoreUpdatePayload, user: dict = Depend
             if payload.aisle_departments is not None
             else row["aisle_departments_json"]
         )
+        old_k_loc_id = (row["kroger_location_id"] if "kroger_location_id" in row.keys() else "") or ""
         k_loc_id = (
             payload.kroger_location_id.strip()
             if payload.kroger_location_id is not None
-            else (row["kroger_location_id"] if "kroger_location_id" in row.keys() else "")
+            else old_k_loc_id
         )
         k_loc_name = (
             payload.kroger_location_name.strip()
@@ -272,6 +273,19 @@ def update_store(store_id: int, payload: StoreUpdatePayload, user: dict = Depend
             """,
             (name, stype, chain, depts, adepts, k_loc_id, k_loc_name, k_loc_addr, store_id),
         )
+        if k_loc_id != old_k_loc_id.strip():
+            conn.execute(
+                "DELETE FROM item_store_locations WHERE store_id = ? AND COALESCE(source, 'manual') = 'kroger'",
+                (store_id,),
+            )
+            conn.execute(
+                """
+                UPDATE shopping_list_items
+                SET aisle = '', price = NULL
+                WHERE list_id IN (SELECT id FROM shopping_lists WHERE store_id = ?)
+                """,
+                (store_id,),
+            )
         if payload.position is not None:
             _reposition_store(conn, store_id, payload.position)
         conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE store_id = ?", (now, store_id))
@@ -315,12 +329,13 @@ def upsert_store_location(store_id: int, payload: LocationUpsertPayload, user: d
             raise HTTPException(status_code=404, detail="Store not found")
         conn.execute(
             """
-            INSERT INTO item_store_locations (item_key, item_display, store_id, department, aisle, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO item_store_locations (item_key, item_display, store_id, department, aisle, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'manual', ?)
             ON CONFLICT(item_key, store_id) DO UPDATE SET
                 item_display = excluded.item_display,
                 department = excluded.department,
                 aisle = excluded.aisle,
+                source = 'manual',
                 updated_at = excluded.updated_at
             """,
             (ikey, payload.item_display.strip(), store_id, html.unescape(payload.department).strip(), payload.aisle.strip(), now),

@@ -165,6 +165,15 @@ WEIGHT_TO_G = {
     "lb": 453.592,
 }
 
+WEIGHT_UNITS = {"lb", "oz", "g", "kg"}
+
+
+def is_weight_unit(unit: str) -> bool:
+    u = (unit or "").strip().lower().rstrip(".")
+    if not u:
+        return False
+    return UNIT_ALIASES.get(u, u) in WEIGHT_UNITS
+
 # Approximate oz per 1 cup for common items when recipe uses cups/tbsp and store uses oz/lb
 CUP_TO_OZ_DENSITY = {
     "all-purpose flour": 4.25,
@@ -239,7 +248,28 @@ def _parse_number_token(token: str) -> Optional[float]:
 
 
 def parse_leading_quantity(text: str) -> tuple[Optional[float], str]:
-    s = _replace_unicode_fractions(text.strip())
+    raw_stripped = text.strip()
+    s = _replace_unicode_fractions(raw_stripped)
+
+    # Do not treat percentages (e.g. "2% milk", "1% cottage cheese") as quantities
+    if re.match(r"^\d+(?:\.\d+)?\s*%", s):
+        return None, raw_stripped
+
+    # Do not treat fat/lean ratios (e.g. "80/20 ground beef", "93/7 turkey") as fractions
+    ratio_match = re.match(r"^(\d+)/(\d+)\b", s)
+    if ratio_match:
+        a, b = int(ratio_match.group(1)), int(ratio_match.group(2))
+        if a >= 50 and b <= 50 and a + b == 100:
+            return None, raw_stripped
+
+    # Support leading multiplier syntax: "2x bananas" or "2× milk"
+    mult_lead = re.match(r"^(\d+(?:\.\d+)?)\s*[x×]\s+(.+)$", s, re.IGNORECASE)
+    if mult_lead:
+        try:
+            return float(mult_lead.group(1)), mult_lead.group(2).strip()
+        except ValueError:
+            pass
+
     # Handle ranges like "2-3", "2 - 3", "2 to 3" -> take upper bound for shopping safety
     range_match = re.match(
         r"^(\d+(?:\.\d+)?(?:\s+\d+/\d+|\s+\d+\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?(?:\s+\d+/\d+|\s+\d+\.\d+)?)\b(.*)$",
@@ -260,7 +290,15 @@ def parse_leading_quantity(text: str) -> tuple[Optional[float], str]:
         if val is not None:
             return val, num_match.group(2).strip()
 
-    return None, text.strip()
+    # Support trailing multiplier syntax: "bananas x3" or "bananas ×3"
+    mult_trail = re.match(r"^(.+?)\s+[x×]\s*(\d+(?:\.\d+)?)$", s, re.IGNORECASE)
+    if mult_trail:
+        try:
+            return float(mult_trail.group(2)), mult_trail.group(1).strip()
+        except ValueError:
+            pass
+
+    return None, raw_stripped
 
 
 def _eval_mixed_number(expr: str) -> Optional[float]:
@@ -365,10 +403,11 @@ def parse_ingredient_line(raw: str) -> dict[str, Any]:
         one_word = re.match(r"^([a-zA-Z]+)\.?\s+(?:of\s+)?(.*)$", rest_clean)
         if one_word:
             cand = one_word.group(1).lower()
-            if cand in UNIT_ALIASES:
+            has_of = bool(re.match(r"^[a-zA-Z]+\.?\s+of\s+", rest_clean, re.IGNORECASE))
+            if cand in UNIT_ALIASES and (qty is not None or cand in ("pinch", "dash") or has_of):
                 unit = UNIT_ALIASES[cand]
                 rest_clean = one_word.group(2).strip()
-            elif cand in SIZE_ADJECTIVES:
+            elif cand in SIZE_ADJECTIVES and qty is not None:
                 # e.g., "2 large yellow onions" -> unit stays count/empty, keep name clean
                 rest_clean = one_word.group(2).strip()
 
@@ -397,25 +436,46 @@ def _strip_fillers(text: str) -> str:
     return s
 
 
+def _expand_singulars(terms: list[str]) -> list[str]:
+    out: list[str] = []
+    for c in terms:
+        if c and c not in out:
+            out.append(c)
+        if c.endswith("es") and len(c) > 4:
+            s = c[:-2]
+            if s not in out:
+                out.append(s)
+        if c.endswith("s") and len(c) > 3:
+            s = c[:-1]
+            if s not in out:
+                out.append(s)
+    return out
+
+
 def match_catalog_item(name: str, catalog_rows: list[dict]) -> Optional[dict]:
     if not name:
         return None
     norm = normalize_item_key(name)
     stripped = _strip_fillers(name)
-    candidates = [norm, stripped]
-    # Also singularize simple trailing 's' / 'es'
-    for c in list(candidates):
-        if c.endswith("es") and len(c) > 4:
-            candidates.append(c[:-2])
-        if c.endswith("s") and len(c) > 3:
-            candidates.append(c[:-1])
+    norm_candidates = _expand_singulars([norm])
+    stripped_candidates = [c for c in _expand_singulars([stripped]) if c not in norm_candidates]
+    all_candidates = norm_candidates + stripped_candidates
 
-    # 1. Exact canonical or alias match
+    # 1a. Exact canonical or alias match on the unstripped name first
+    # (prevents e.g. "sweet potato" from matching "potato" before "sweet potato")
     for row in catalog_rows:
         cname = row["canonical_name"].lower()
         aliases = [a.lower() for a in json.loads(row.get("aliases_json") or "[]")]
-        if any(c == cname or c in aliases for c in candidates):
+        if any(c == cname or c in aliases for c in norm_candidates):
             return row
+
+    # 1b. Exact canonical or alias match after stripping filler prefixes
+    if stripped_candidates:
+        for row in catalog_rows:
+            cname = row["canonical_name"].lower()
+            aliases = [a.lower() for a in json.loads(row.get("aliases_json") or "[]")]
+            if any(c == cname or c in aliases for c in stripped_candidates):
+                return row
 
     # 2. Longest substring match (canonical or alias inside ingredient name)
     best_row = None
@@ -425,7 +485,7 @@ def match_catalog_item(name: str, catalog_rows: list[dict]) -> Optional[dict]:
         for term in terms:
             if len(term) < 4:
                 continue
-            for c in candidates:
+            for c in all_candidates:
                 if re.search(rf"\b{re.escape(term)}\b", c) and len(term) > best_len:
                     best_len = len(term)
                     best_row = row
@@ -590,18 +650,28 @@ def compute_grocery_packages(
                 else:
                     unconverted.append(f"{format_qty(q)} {u}".strip())
 
+            is_bulk_weight = (
+                pkg_unit in WEIGHT_UNITS
+                and abs(pkg_size - 1.0) < 0.01
+                and pkg_label.strip().lower() in ("lb", "lbs", "oz", "g", "kg", "1 lb", "1 oz", "lb / crown")
+            )
+
             if converted_total > 0:
-                raw_packs = converted_total / pkg_size
-                # Tolerance so 16.01 oz doesn't round up to 2 x 16 oz packs
-                buy_qty = float(max(1, math.ceil(raw_packs - 0.03)))
-                buy_unit = pkg_label
+                if is_bulk_weight:
+                    buy_qty = round(converted_total, 2)
+                    buy_unit = pkg_unit
+                else:
+                    raw_packs = converted_total / pkg_size
+                    # Tolerance so 16.01 oz doesn't round up to 2 x 16 oz packs
+                    buy_qty = float(max(1, math.ceil(raw_packs - 0.03)))
+                    buy_unit = pkg_label
                 need_str = f"{format_qty(converted_total)} {pkg_unit.replace('_', ' ')}"
                 if unconverted:
                     need_str += f" + {', '.join(unconverted)}"
                 needed_summary = f"Need {need_str} · Std: {pkg_label}"
             else:
                 buy_qty = 1.0
-                buy_unit = pkg_label
+                buy_unit = pkg_unit if is_bulk_weight else pkg_label
                 needed_summary = f"Std: {pkg_label}" + (f" ({', '.join(unconverted)})" if unconverted else "")
         else:
             # No catalog match: sum compatible quantities directly
@@ -630,6 +700,7 @@ def compute_grocery_packages(
                 "name": b["name"],
                 "buy_qty": buy_qty,
                 "buy_unit": buy_unit,
+                "is_weight": is_weight_unit(buy_unit),
                 "needed_summary": needed_summary,
                 "default_department": b["default_department"],
                 "is_pantry_staple": b["is_pantry_staple"],

@@ -17,7 +17,7 @@ class HALowStockPayload(BaseModel):
     list_id: Optional[int] = None
     list_type: str = "weekly"
     store_name: str = ""
-    notes: str = "Added by Home Assistant"
+    notes: str = ""
 
 
 @router.get("/lists")

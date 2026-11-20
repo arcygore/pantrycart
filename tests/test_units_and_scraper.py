@@ -1,11 +1,12 @@
 import json
 import os
+import sqlite3
 import tempfile
 
 from app.database import SEED_CATALOG, init_db
 from app.routers.lists_router import natural_sort_key, resolve_store_department
 from app.scraper import _extract_instructions, _find_recipe_json_ld
-from app.units import compute_grocery_packages, parse_ingredient_line
+from app.units import compute_grocery_packages, is_weight_unit, parse_ingredient_line, parse_leading_quantity
 
 
 def _mock_catalog():
@@ -45,6 +46,22 @@ def test_parse_ingredient_lines():
     assert p3["unit"] == "clove"
     assert p3["name"] == "garlic"
 
+    # Issue #6: percentages and lean/fat ratios must stay in the item name
+    q_pct, r_pct = parse_leading_quantity("2% milk")
+    assert q_pct is None and r_pct == "2% milk"
+    q_ratio, r_ratio = parse_leading_quantity("80/20 ground beef")
+    assert q_ratio is None and r_ratio == "80/20 ground beef"
+
+    # Issue #6: multiplier syntax ("2x bananas" and "bananas x3")
+    q_lead, r_lead = parse_leading_quantity("2x bananas")
+    assert q_lead == 2.0 and r_lead == "bananas"
+    q_trail, r_trail = parse_leading_quantity("bananas x3")
+    assert q_trail == 3.0 and r_trail == "bananas"
+
+    assert is_weight_unit("lb") is True
+    assert is_weight_unit("oz") is True
+    assert is_weight_unit("15 oz can") is False
+
 
 def test_compute_us_grocery_packages():
     catalog = _mock_catalog()
@@ -68,6 +85,13 @@ def test_compute_us_grocery_packages():
     # Salt is flagged as a pantry staple (unchecked by default)
     assert pkgs["kosher salt"]["is_pantry_staple"] is True
     assert pkgs["kosher salt"]["include_by_default"] is False
+
+    # Issue #4: bulk weight items stay in weight units without ceiling to integer
+    w_entries = [{"name": "sweet potato", "quantity": 1.5, "unit": "lb", "recipe_title": "Roast"}]
+    w_pkgs = {p["item_key"]: p for p in compute_grocery_packages(w_entries, catalog)}
+    assert w_pkgs["sweet potato"]["buy_qty"] == 1.5
+    assert w_pkgs["sweet potato"]["buy_unit"] == "lb"
+    assert w_pkgs["sweet potato"]["is_weight"] is True
 
 
 def test_natural_aisle_sort_and_department_bridge():
@@ -110,3 +134,13 @@ def test_db_init_smoke():
         app.database.DB_PATH = os.environ["PANTRY_DB_PATH"]
         init_db()
         assert os.path.exists(app.database.DB_PATH)
+        conn = sqlite3.connect(app.database.DB_PATH)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert {"staple_lists", "kroger_product_prefs", "user_recipe_prefs"}.issubset(tables)
+        sli_cols = {r[1] for r in conn.execute("PRAGMA table_info(shopping_list_items)").fetchall()}
+        assert "price" in sli_cols
+        loc_cols = {r[1] for r in conn.execute("PRAGMA table_info(item_store_locations)").fetchall()}
+        assert "source" in loc_cols
+        tpl_cols = {r[1] for r in conn.execute("PRAGMA table_info(weekly_template_items)").fetchall()}
+        assert "staple_list_id" in tpl_cols
+        conn.close()

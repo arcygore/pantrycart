@@ -1,5 +1,5 @@
 import { api, apiUpload } from "../api.js";
-import { esc, openModal, toast } from "../utils.js";
+import { bindOverflowMenus, esc, openModal, overflowMenu, toast } from "../utils.js";
 
 export async function renderPantryView(container, state) {
   let pantryData = await api("/api/pantry");
@@ -28,13 +28,15 @@ export async function renderPantryView(container, state) {
     container.innerHTML = `
       <div class="page-header">
         <div>
-          <h1 class="page-title">Pantry Staples</h1>
-          <p class="page-subtitle">Categorized pantry inventory — items marked "In Stock" won't clutter your weekly list</p>
+          <h1 class="page-title">Pantry</h1>
+          <p class="page-subtitle">Tap any status badge to toggle stock or tap an item to edit</p>
         </div>
-        <div class="row">
-          ${isGuest ? `<span class="badge badge-accent">Guest View</span>` : `
-            <button class="btn btn-sm" id="import-pantry-btn">Bulk Import</button>
-            <button class="btn btn-primary btn-sm" id="add-pantry-btn">+ Add Pantry Item</button>
+        <div class="row" style="gap: 6px;">
+          ${isGuest ? `<span class="badge badge-accent">Guest</span>` : `
+            <button class="btn btn-primary btn-sm" id="add-pantry-btn">+ Add</button>
+            ${overflowMenu([
+              { id: "import-pantry-btn", label: "📥 Bulk Import (.csv / .xlsx)" },
+            ], { title: "Pantry options" })}
           `}
         </div>
       </div>
@@ -71,25 +73,25 @@ export async function renderPantryView(container, state) {
               </div>
               ${catItems.map((item) => `
                 <div class="item-row" data-pantry-id="${item.id}">
-                  <div class="item-main">
+                  <div class="item-main ${isGuest ? "" : "editable edit-pantry-btn"}" ${isGuest ? "" : `data-id="${item.id}" title="Tap to edit"`}>
                     <div class="item-title-line">
                       <span class="item-name">${esc(item.name)}</span>
-                      <span class="badge ${item.in_stock ? "badge-primary" : "badge-accent"}">
-                        ${item.in_stock ? "In Stock" : "Out / Low"}
-                      </span>
                       ${item.quantity_note ? `<span class="small muted">(${esc(item.quantity_note)})</span>` : ""}
                     </div>
                   </div>
                   <div class="row" style="gap: 6px;">
-                    ${isGuest ? "" : `
-                      <button class="btn btn-sm toggle-stock-btn" data-id="${item.id}">
-                        ${item.in_stock ? "Mark Low" : "Mark In Stock"}
+                    ${isGuest ? `
+                      <span class="badge ${item.in_stock ? "badge-primary" : "badge-accent"}">
+                        ${item.in_stock ? "In Stock" : "Out / Low"}
+                      </span>
+                    ` : `
+                      <button type="button" class="badge toggle-stock-btn ${item.in_stock ? "badge-primary" : "badge-accent"}" data-id="${item.id}" style="border: 1px solid var(--border);" title="Tap to toggle In Stock / Out">
+                        ${item.in_stock ? "In Stock" : "Out / Low"}
                       </button>
                     `}
                     ${!item.in_stock ? `
-                      <button class="btn btn-sm btn-primary send-to-list-btn" data-id="${item.id}">+ To List</button>
+                      <button class="btn btn-sm btn-primary send-to-list-btn" data-id="${item.id}">+ List</button>
                     ` : ""}
-                    ${isGuest ? "" : `<button class="btn btn-sm edit-pantry-btn" data-id="${item.id}">Edit</button>`}
                   </div>
                 </div>
               `).join("")}
@@ -99,6 +101,7 @@ export async function renderPantryView(container, state) {
       `}
     `;
 
+    bindOverflowMenus(container);
     bindEvents();
   }
 
@@ -146,7 +149,7 @@ export async function renderPantryView(container, state) {
         }
         await api(`/api/lists/${weeklyList.id}/items`, {
           method: "POST",
-          body: { name: item.name, notes: "Restock pantry" },
+          body: { name: item.name },
         });
         toast(`Added ${item.name} to ${weeklyList.name}`);
       });

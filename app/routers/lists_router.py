@@ -8,8 +8,16 @@ from pydantic import BaseModel, Field
 
 from app.auth import get_current_user, require_non_guest, utc_now_iso
 from app.database import GROCERY_DEPARTMENTS, get_db
+from app.routers.kroger_router import lookup_single_item_kroger_aisle, sync_list_aisles_for_kroger
 from app.routers.stores_router import get_effective_store_departments
-from app.units import clean_shopping_item_name, match_catalog_item, normalize_item_key, parse_ingredient_line
+from app.units import (
+    clean_shopping_item_name,
+    convert_quantity,
+    is_weight_unit,
+    match_catalog_item,
+    normalize_item_key,
+    parse_ingredient_line,
+)
 
 router = APIRouter(prefix="/api/lists", tags=["lists"])
 
@@ -37,9 +45,10 @@ class TemplateItemPayload(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     buy_qty: float = Field(default=1.0, gt=0)
     buy_unit: str = ""
-    department: str = "Produce"
+    department: str = ""
     notes: str = ""
     is_active: bool = True
+    staple_list_id: Optional[int] = None
 
 
 class TemplateItemUpdatePayload(BaseModel):
@@ -49,10 +58,25 @@ class TemplateItemUpdatePayload(BaseModel):
     department: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    staple_list_id: Optional[int] = None
+
+
+class StapleListPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class ApplyTemplateOverride(BaseModel):
+    id: int
+    buy_qty: Optional[float] = Field(default=None, gt=0)
+    buy_unit: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class ApplyTemplatePayload(BaseModel):
     item_ids: Optional[list[int]] = None
+    staple_list_id: Optional[int] = None
+    # Per-item edits made right before adding (issue #9) — not saved back to the staple list
+    overrides: list[ApplyTemplateOverride] = Field(default_factory=list)
 
 
 class AddListItemPayload(BaseModel):
@@ -164,6 +188,14 @@ def build_list_response(conn, list_row, user_id: Optional[int] = None) -> dict:
         ).fetchall()
         loc_map = {r["item_key"]: dict(r) for r in loc_rows}
 
+    prefs_map = {}
+    if store and user_id and (store.get("kroger_location_id") or "").strip():
+        pref_rows = conn.execute(
+            "SELECT item_key, upc, brand, description, image_url FROM kroger_product_prefs WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        prefs_map = {r["item_key"]: dict(r) for r in pref_rows}
+
     catalog_rows = [dict(r) for r in conn.execute("SELECT * FROM product_catalog").fetchall()]
     dept_order = {d.lower(): idx for idx, d in enumerate(store_depts)}
 
@@ -180,6 +212,7 @@ def build_list_response(conn, list_row, user_id: Optional[int] = None) -> dict:
 
     enriched = []
     for r in item_rows:
+        rkeys = r.keys()
         loc = loc_map.get(r["item_key"])
         if loc:
             eff_dept = resolve_store_department(loc["department"], store_depts)
@@ -193,6 +226,7 @@ def build_list_response(conn, list_row, user_id: Optional[int] = None) -> dict:
             eff_dept = resolve_store_department(raw_dept or "Other", store_depts)
             eff_aisle = "" if store else r["aisle"]
 
+        pref = prefs_map.get(r["item_key"])
         enriched.append(
             {
                 "id": r["id"],
@@ -201,9 +235,15 @@ def build_list_response(conn, list_row, user_id: Optional[int] = None) -> dict:
                 "item_key": r["item_key"],
                 "buy_qty": r["buy_qty"],
                 "buy_unit": r["buy_unit"],
+                "is_weight": is_weight_unit(r["buy_unit"]),
                 "needed_summary": r["needed_summary"],
                 "department": eff_dept,
                 "aisle": eff_aisle,
+                "price": r["price"] if "price" in rkeys else None,
+                "preferred_upc": pref["upc"] if pref else "",
+                "preferred_brand": pref["brand"] if pref else "",
+                "preferred_description": pref["description"] if pref else "",
+                "preferred_image_url": pref["image_url"] if pref else "",
                 "source_recipes": json.loads(r["source_recipes_json"] or "[]"),
                 "notes": r["notes"],
                 "checked": bool(r["checked"]),
@@ -286,26 +326,116 @@ def reorder_shopping_lists(payload: ListReorderPayload, user: dict = Depends(get
     return list_shopping_lists(False, user)
 
 
-@router.get("/template/items")
-def get_template_items(user: dict = Depends(get_current_user)):
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM weekly_template_items ORDER BY sort_order ASC, id ASC"
-        ).fetchall()
+def _serialize_template_item(r) -> dict:
+    keys = r.keys()
+    return {
+        "id": r["id"],
+        "name": r["name"],
+        "item_key": r["item_key"],
+        "buy_qty": r["buy_qty"],
+        "buy_unit": r["buy_unit"],
+        "department": r["department"],
+        "notes": r["notes"],
+        "is_active": bool(r["is_active"]),
+        "sort_order": r["sort_order"],
+        "staple_list_id": r["staple_list_id"] if "staple_list_id" in keys else None,
+    }
+
+
+def _default_staple_list_id(conn) -> int:
+    row = conn.execute("SELECT id FROM staple_lists ORDER BY sort_order ASC, id ASC LIMIT 1").fetchone()
+    if row:
+        return row["id"]
+    cur = conn.execute(
+        "INSERT INTO staple_lists (name, sort_order, created_at) VALUES ('Weekly Staples', 1, ?)",
+        (utc_now_iso(),),
+    )
+    return cur.lastrowid
+
+
+# ---------------------------------------------------------------------------
+# Staple lists (issue #9) — named groups of recurring items, e.g. "Weekly Staples",
+# "Costco Bulk", "Party Supplies". Items live in weekly_template_items (legacy name).
+# ---------------------------------------------------------------------------
+
+
+def _list_staple_lists(conn) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT sl.*,
+               COUNT(t.id) AS item_count,
+               SUM(CASE WHEN t.is_active = 1 THEN 1 ELSE 0 END) AS active_count
+        FROM staple_lists sl
+        LEFT JOIN weekly_template_items t ON t.staple_list_id = sl.id
+        GROUP BY sl.id
+        ORDER BY sl.sort_order ASC, sl.id ASC
+        """
+    ).fetchall()
     return [
         {
             "id": r["id"],
             "name": r["name"],
-            "item_key": r["item_key"],
-            "buy_qty": r["buy_qty"],
-            "buy_unit": r["buy_unit"],
-            "department": r["department"],
-            "notes": r["notes"],
-            "is_active": bool(r["is_active"]),
             "sort_order": r["sort_order"],
+            "item_count": r["item_count"] or 0,
+            "active_count": r["active_count"] or 0,
         }
         for r in rows
     ]
+
+
+@router.get("/staple-lists")
+def get_staple_lists(user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        _default_staple_list_id(conn)
+        return _list_staple_lists(conn)
+
+
+@router.post("/staple-lists")
+def create_staple_list(payload: StapleListPayload, user: dict = Depends(require_non_guest)):
+    with get_db() as conn:
+        max_ord = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM staple_lists").fetchone()[0]
+        cur = conn.execute(
+            "INSERT INTO staple_lists (name, sort_order, created_at) VALUES (?, ?, ?)",
+            (payload.name.strip(), max_ord + 1, utc_now_iso()),
+        )
+        new_id = cur.lastrowid
+        lists = _list_staple_lists(conn)
+    return next(sl for sl in lists if sl["id"] == new_id)
+
+
+@router.patch("/staple-lists/{staple_list_id}")
+def rename_staple_list(staple_list_id: int, payload: StapleListPayload, user: dict = Depends(require_non_guest)):
+    with get_db() as conn:
+        if not conn.execute("SELECT 1 FROM staple_lists WHERE id = ?", (staple_list_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Staple list not found")
+        conn.execute("UPDATE staple_lists SET name = ? WHERE id = ?", (payload.name.strip(), staple_list_id))
+        return next(sl for sl in _list_staple_lists(conn) if sl["id"] == staple_list_id)
+
+
+@router.delete("/staple-lists/{staple_list_id}")
+def delete_staple_list(staple_list_id: int, user: dict = Depends(require_non_guest)):
+    with get_db() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM staple_lists").fetchone()[0]
+        if count <= 1:
+            raise HTTPException(status_code=400, detail="You need at least one staple list. Rename it instead.")
+        conn.execute("DELETE FROM weekly_template_items WHERE staple_list_id = ?", (staple_list_id,))
+        conn.execute("DELETE FROM staple_lists WHERE id = ?", (staple_list_id,))
+    return {"ok": True}
+
+
+@router.get("/template/items")
+def get_template_items(staple_list_id: Optional[int] = None, user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        if staple_list_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM weekly_template_items WHERE staple_list_id = ? ORDER BY sort_order ASC, id ASC",
+                (staple_list_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM weekly_template_items ORDER BY sort_order ASC, id ASC"
+            ).fetchall()
+    return [_serialize_template_item(r) for r in rows]
 
 
 @router.post("/template/items")
@@ -316,12 +446,13 @@ def add_template_item(payload: TemplateItemPayload, user: dict = Depends(require
         cat = match_catalog_item(payload.name, catalog_rows)
         ikey = cat["canonical_name"] if cat else normalize_item_key(payload.name)
         unit = payload.buy_unit.strip() or (cat["package_label"] if cat else "")
-        dept = payload.department.strip() or (cat["default_department"] if cat else "Produce")
+        dept = payload.department.strip() or (cat["default_department"] if cat else "Other")
+        staple_id = payload.staple_list_id or _default_staple_list_id(conn)
         max_ord = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM weekly_template_items").fetchone()[0]
         cur = conn.execute(
             """
-            INSERT INTO weekly_template_items (name, item_key, buy_qty, buy_unit, department, notes, is_active, sort_order, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO weekly_template_items (name, item_key, buy_qty, buy_unit, department, notes, is_active, sort_order, created_at, staple_list_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.name.strip(),
@@ -333,10 +464,11 @@ def add_template_item(payload: TemplateItemPayload, user: dict = Depends(require
                 1 if payload.is_active else 0,
                 max_ord + 1,
                 now,
+                staple_id,
             ),
         )
         row = conn.execute("SELECT * FROM weekly_template_items WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return dict(row)
+    return _serialize_template_item(row)
 
 
 @router.patch("/template/items/{tpl_id}")
@@ -352,16 +484,17 @@ def update_template_item(tpl_id: int, payload: TemplateItemUpdatePayload, user: 
         dept = payload.department.strip() if payload.department is not None else row["department"]
         notes = payload.notes.strip() if payload.notes is not None else row["notes"]
         act = (1 if payload.is_active else 0) if payload.is_active is not None else row["is_active"]
+        staple_id = payload.staple_list_id if payload.staple_list_id is not None else row["staple_list_id"]
         conn.execute(
             """
             UPDATE weekly_template_items
-            SET name = ?, item_key = ?, buy_qty = ?, buy_unit = ?, department = ?, notes = ?, is_active = ?
+            SET name = ?, item_key = ?, buy_qty = ?, buy_unit = ?, department = ?, notes = ?, is_active = ?, staple_list_id = ?
             WHERE id = ?
             """,
-            (name, ikey, qty, unit, dept, notes, act, tpl_id),
+            (name, ikey, qty, unit, dept, notes, act, staple_id, tpl_id),
         )
         updated = conn.execute("SELECT * FROM weekly_template_items WHERE id = ?", (tpl_id,)).fetchone()
-    return dict(updated)
+    return _serialize_template_item(updated)
 
 
 @router.delete("/template/items/{tpl_id}")
@@ -373,7 +506,13 @@ def delete_template_item(tpl_id: int, user: dict = Depends(require_non_guest)):
 
 @router.get("/suggestions")
 def suggest_items(q: str = "", store_id: Optional[int] = None, user: dict = Depends(get_current_user)):
-    ql = q.strip().lower()
+    raw_q = q.strip()
+    ql = raw_q.lower()
+    if raw_q:
+        parsed_q = parse_ingredient_line(raw_q)
+        if parsed_q.get("quantity") is not None and parsed_q.get("name"):
+            ql = parsed_q["name"].strip().lower()
+
     seen = {}
     with get_db() as conn:
         if store_id:
@@ -391,23 +530,72 @@ def suggest_items(q: str = "", store_id: Optional[int] = None, user: dict = Depe
                         "buy_unit": "",
                     }
 
+        tpls = conn.execute(
+            "SELECT item_key, name, department, buy_unit FROM weekly_template_items ORDER BY sort_order ASC, id ASC"
+        ).fetchall()
+        for t in tpls:
+            if not ql or ql in t["name"].lower() or ql in t["item_key"]:
+                if t["item_key"] not in seen:
+                    seen[t["item_key"]] = {
+                        "item_key": t["item_key"],
+                        "name": t["name"],
+                        "department": t["department"],
+                        "aisle": "",
+                        "buy_unit": t["buy_unit"] or "",
+                    }
+                elif not seen[t["item_key"]]["buy_unit"] and t["buy_unit"]:
+                    seen[t["item_key"]]["buy_unit"] = t["buy_unit"]
+
         cats = conn.execute("SELECT * FROM product_catalog").fetchall()
         for c in cats:
             aliases = json.loads(c["aliases_json"] or "[]")
             if not ql or ql in c["display_name"].lower() or ql in c["canonical_name"] or any(ql in a for a in aliases):
+                pkg_unit = c["package_unit"]
+                pkg_label = c["package_label"]
+                default_unit = (
+                    pkg_unit
+                    if (
+                        pkg_unit in ("lb", "oz", "g", "kg")
+                        and abs(float(c["package_size"] or 1) - 1.0) < 0.01
+                        and (pkg_label or "").strip().lower() in ("lb", "lbs", "oz", "g", "kg", "1 lb", "1 oz", "lb / crown")
+                    )
+                    else pkg_label
+                )
                 if c["canonical_name"] not in seen:
                     seen[c["canonical_name"]] = {
                         "item_key": c["canonical_name"],
                         "name": c["display_name"],
                         "department": c["default_department"],
                         "aisle": "",
-                        "buy_unit": c["package_label"],
+                        "buy_unit": default_unit,
                     }
                 elif not seen[c["canonical_name"]]["buy_unit"]:
-                    seen[c["canonical_name"]]["buy_unit"] = c["package_label"]
+                    seen[c["canonical_name"]]["buy_unit"] = default_unit
+
+        recent_items = conn.execute(
+            "SELECT item_key, name, department, buy_unit FROM shopping_list_items ORDER BY id DESC LIMIT 120"
+        ).fetchall()
+        for ri in recent_items:
+            if not ql or ql in ri["name"].lower() or ql in ri["item_key"]:
+                if ri["item_key"] not in seen:
+                    seen[ri["item_key"]] = {
+                        "item_key": ri["item_key"],
+                        "name": ri["name"],
+                        "department": ri["department"] or "Other",
+                        "aisle": "",
+                        "buy_unit": ri["buy_unit"] or "",
+                    }
 
     results = list(seen.values())
-    results.sort(key=lambda x: (0 if x["aisle"] else 1, x["name"].lower()))
+    for x in results:
+        x["is_weight"] = is_weight_unit(x.get("buy_unit", ""))
+    results.sort(
+        key=lambda x: (
+            0 if (ql and x["name"].lower().startswith(ql)) else 1,
+            0 if x["aisle"] else 1,
+            x["name"].lower(),
+        )
+    )
     return results[:12]
 
 
@@ -455,8 +643,10 @@ def get_shopping_list(list_id: int, user: dict = Depends(get_current_user)):
 
 
 @router.patch("/{list_id}")
-def update_shopping_list(list_id: int, payload: UpdateListPayload, user: dict = Depends(get_current_user)):
+async def update_shopping_list(list_id: int, payload: UpdateListPayload, user: dict = Depends(get_current_user)):
     now = utc_now_iso()
+    target_kroger_id = ""
+    store_changed = False
     with get_db() as conn:
         row = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
         if not row:
@@ -465,6 +655,8 @@ def update_shopping_list(list_id: int, payload: UpdateListPayload, user: dict = 
         ltype = payload.list_type if payload.list_type is not None else row["list_type"]
         sid = payload.store_id if "store_id" in payload.model_fields_set else row["store_id"]
         arch = (1 if payload.is_archived else 0) if payload.is_archived is not None else row["is_archived"]
+        store_changed = ("store_id" in payload.model_fields_set) and (sid != row["store_id"])
+
         conn.execute(
             """
             UPDATE shopping_lists
@@ -473,10 +665,44 @@ def update_shopping_list(list_id: int, payload: UpdateListPayload, user: dict = 
             """,
             (name, ltype, sid, arch, now, list_id),
         )
+        if store_changed:
+            # Always clear cached item aisles & prices when changing shopping location (issue #7)
+            conn.execute("UPDATE shopping_list_items SET aisle = '', price = NULL WHERE list_id = ?", (list_id,))
+            if sid is not None:
+                srow = conn.execute("SELECT kroger_location_id FROM stores WHERE id = ?", (sid,)).fetchone()
+                target_kroger_id = (
+                    (srow["kroger_location_id"] or "").strip()
+                    if srow and "kroger_location_id" in srow.keys()
+                    else ""
+                )
+                if not target_kroger_id:
+                    # Non-Kroger store (e.g. Publix, Costco): drop any stale kroger-sourced mappings, keep manual ones
+                    conn.execute(
+                        "DELETE FROM item_store_locations WHERE store_id = ? AND COALESCE(source, 'manual') = 'kroger'",
+                        (sid,),
+                    )
+
         if payload.position is not None:
             _reposition_list(conn, list_id, payload.position)
+
+    store_sync = {"synced": False, "updated_count": 0, "cleared": store_changed, "location_name": ""}
+    if store_changed and target_kroger_id:
+        try:
+            res = await sync_list_aisles_for_kroger(list_id, user["id"], force_overwrite_manual=False)
+            store_sync = {
+                "synced": not bool(res.get("skipped")),
+                "updated_count": res.get("updated_count", 0),
+                "cleared": True,
+                "location_name": res.get("location_name", ""),
+            }
+        except Exception:
+            pass
+
+    with get_db() as conn:
         updated = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
-        return build_list_response(conn, updated, user["id"])
+        resp = build_list_response(conn, updated, user["id"])
+        resp["store_sync"] = store_sync
+        return resp
 
 
 @router.post("/{list_id}/apply-template")
@@ -497,27 +723,48 @@ def apply_weekly_template(
                 f"SELECT * FROM weekly_template_items WHERE id IN ({placeholders}) ORDER BY sort_order ASC, id ASC",
                 tuple(payload.item_ids),
             ).fetchall()
+        elif payload.staple_list_id is not None:
+            tpl_rows = conn.execute(
+                "SELECT * FROM weekly_template_items WHERE is_active = 1 AND staple_list_id = ? ORDER BY sort_order ASC, id ASC",
+                (payload.staple_list_id,),
+            ).fetchall()
         else:
             tpl_rows = conn.execute(
                 "SELECT * FROM weekly_template_items WHERE is_active = 1 ORDER BY sort_order ASC, id ASC"
             ).fetchall()
 
+        overrides = {o.id: o for o in payload.overrides}
         for t in tpl_rows:
+            ov = overrides.get(t["id"])
             add_item_to_list_internal(
                 conn,
                 list_id,
                 AddListItemPayload(
                     name=t["name"],
-                    buy_qty=t["buy_qty"],
-                    buy_unit=t["buy_unit"],
+                    buy_qty=(ov.buy_qty if ov and ov.buy_qty is not None else t["buy_qty"]),
+                    buy_unit=(ov.buy_unit if ov and ov.buy_unit is not None else t["buy_unit"]),
                     department=t["department"],
-                    notes=t["notes"] or "Weekly staple",
+                    notes=(ov.notes if ov and ov.notes is not None else (t["notes"] or "")),
                     save_to_store=False,
                 ),
                 user["id"],
             )
         updated = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
         return build_list_response(conn, updated, user["id"])
+
+
+@router.post("/{list_id}/clear-all")
+def clear_all_items(list_id: int, user: dict = Depends(require_non_guest)):
+    """Empty a whole list in one tap (e.g. reset the Weekly Grocery Trip)."""
+    now = utc_now_iso()
+    with get_db() as conn:
+        lst = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
+        if not lst:
+            raise HTTPException(status_code=404, detail="List not found")
+        conn.execute("DELETE FROM shopping_list_items WHERE list_id = ?", (list_id,))
+        conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE id = ?", (now, list_id))
+        updated_list = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
+        return build_list_response(conn, updated_list, user["id"])
 
 
 @router.delete("/{list_id}")
@@ -560,7 +807,16 @@ def add_item_to_list_internal(conn, list_id: int, payload: AddListItemPayload, u
         display_name = clean_name if len(clean_name) > len(cat["display_name"]) else cat["display_name"]
         default_dept = cat["default_department"]
         if not buy_unit:
-            buy_unit = cat["package_label"]
+            pkg_unit = cat["package_unit"]
+            pkg_label = cat["package_label"]
+            if (
+                pkg_unit in ("lb", "oz", "g", "kg")
+                and abs(float(cat["package_size"] or 1) - 1.0) < 0.01
+                and (pkg_label or "").strip().lower() in ("lb", "lbs", "oz", "g", "kg", "1 lb", "1 oz", "lb / crown")
+            ):
+                buy_unit = pkg_unit
+            else:
+                buy_unit = pkg_label
     else:
         ikey = normalize_item_key(clean_name)
         display_name = clean_name[:1].upper() + clean_name[1:] if clean_name else raw_name
@@ -585,12 +841,13 @@ def add_item_to_list_internal(conn, list_id: int, payload: AddListItemPayload, u
     if lst["store_id"] and payload.save_to_store and (payload.department.strip() or payload.aisle.strip()):
         conn.execute(
             """
-            INSERT INTO item_store_locations (item_key, item_display, store_id, department, aisle, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO item_store_locations (item_key, item_display, store_id, department, aisle, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'manual', ?)
             ON CONFLICT(item_key, store_id) DO UPDATE SET
                 item_display = excluded.item_display,
                 department = excluded.department,
                 aisle = excluded.aisle,
+                source = 'manual',
                 updated_at = excluded.updated_at
             """,
             (ikey, display_name, lst["store_id"], dept, aisle, now),
@@ -602,13 +859,27 @@ def add_item_to_list_internal(conn, list_id: int, payload: AddListItemPayload, u
         (list_id, ikey),
     ).fetchone()
     if existing:
-        new_qty = round(existing["buy_qty"] + buy_qty, 2)
+        add_qty = buy_qty
+        existing_unit = (existing["buy_unit"] or "").strip()
+        if existing_unit and buy_unit and is_weight_unit(existing_unit) and is_weight_unit(buy_unit):
+            conv = convert_quantity(buy_qty, buy_unit, existing_unit, ikey)
+            if conv is not None:
+                add_qty = conv
+        new_qty = round(existing["buy_qty"] + add_qty, 2)
+        new_unit = existing_unit or buy_unit
         conn.execute(
-            "UPDATE shopping_list_items SET buy_qty = ?, notes = COALESCE(NULLIF(?, ''), notes) WHERE id = ?",
-            (new_qty, payload.notes.strip(), existing["id"]),
+            "UPDATE shopping_list_items SET buy_qty = ?, buy_unit = ?, notes = COALESCE(NULLIF(?, ''), notes) WHERE id = ?",
+            (new_qty, new_unit, payload.notes.strip(), existing["id"]),
         )
+        target_item_id = existing["id"]
+        eff_name = existing["name"]
+        eff_qty = new_qty
+        eff_unit = new_unit
+        eff_dept = existing["department"] or dept
+        eff_aisle = existing["aisle"] or aisle
+        merged_flag = True
     else:
-        conn.execute(
+        cur = conn.execute(
             """
             INSERT INTO shopping_list_items (
                 list_id, name, item_key, buy_qty, buy_unit, needed_summary,
@@ -628,16 +899,49 @@ def add_item_to_list_internal(conn, list_id: int, payload: AddListItemPayload, u
                 now,
             ),
         )
+        target_item_id = cur.lastrowid
+        eff_name = display_name
+        eff_qty = buy_qty
+        eff_unit = buy_unit
+        eff_dept = dept
+        eff_aisle = aisle
+        merged_flag = False
 
     conn.execute("UPDATE shopping_lists SET updated_at = ? WHERE id = ?", (now, list_id))
     updated_list = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
-    return build_list_response(conn, updated_list, user_id)
+    resp = build_list_response(conn, updated_list, user_id)
+    resp["last_added"] = {
+        "id": target_item_id,
+        "name": eff_name,
+        "buy_qty": eff_qty,
+        "buy_unit": eff_unit,
+        "department": eff_dept,
+        "aisle": eff_aisle,
+        "merged": merged_flag,
+    }
+    return resp
 
 
 @router.post("/{list_id}/items")
-def add_list_item(list_id: int, payload: AddListItemPayload, user: dict = Depends(get_current_user)):
+async def add_list_item(list_id: int, payload: AddListItemPayload, user: dict = Depends(get_current_user)):
     with get_db() as conn:
-        return add_item_to_list_internal(conn, list_id, payload, user["id"])
+        resp = add_item_to_list_internal(conn, list_id, payload, user["id"])
+
+    last_added = resp.get("last_added") or {}
+    store_info = resp.get("store") or {}
+    if store_info.get("kroger_location_id") and last_added.get("id") and not last_added.get("aisle"):
+        await lookup_single_item_kroger_aisle(list_id, last_added["id"], user["id"])
+        with get_db() as conn:
+            updated_list = conn.execute("SELECT * FROM shopping_lists WHERE id = ?", (list_id,)).fetchone()
+            if updated_list:
+                refreshed = build_list_response(conn, updated_list, user["id"])
+                matched_it = next((i for i in refreshed["items"] if i["id"] == last_added["id"]), None)
+                if matched_it:
+                    last_added["aisle"] = matched_it["aisle"]
+                    last_added["department"] = matched_it["department"]
+                refreshed["last_added"] = last_added
+                return refreshed
+    return resp
 
 
 @router.patch("/{list_id}/items/{item_id}")
@@ -706,12 +1010,13 @@ def update_list_item(
             eff_dept = dept or "Dry Goods"
             conn.execute(
                 """
-                INSERT INTO item_store_locations (item_key, item_display, store_id, department, aisle, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO item_store_locations (item_key, item_display, store_id, department, aisle, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'manual', ?)
                 ON CONFLICT(item_key, store_id) DO UPDATE SET
                     item_display = excluded.item_display,
                     department = excluded.department,
                     aisle = excluded.aisle,
+                    source = 'manual',
                     updated_at = excluded.updated_at
                 """,
                 (ikey, name, lst["store_id"], eff_dept, aisle, now),

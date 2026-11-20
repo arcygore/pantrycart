@@ -2,6 +2,8 @@ const CACHE_NAME = "pantrycart-__BUILD_ID__";
 const SHELL_ASSETS = [
   "/",
   "/static/css/styles.css",
+  "/static/css/planner.css",
+  "/static/css/recipes.css",
   "/static/js/app.js",
   "/static/js/api.js",
   "/static/js/utils.js",

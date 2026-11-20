@@ -28,6 +28,138 @@ export function toast(message, isError = false) {
   }, 3400);
 }
 
+/**
+ * Toast with an inline action button (e.g. "Undo"). Stays a little longer than a normal toast.
+ */
+export function toastAction(message, actionLabel, onAction, isError = false) {
+  const root = document.getElementById("toast-root");
+  if (!root) return;
+  const el = document.createElement("div");
+  el.className = `toast toast-with-action${isError ? " error" : ""}`;
+  const span = document.createElement("span");
+  span.textContent = message;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "toast-action-btn";
+  btn.textContent = actionLabel;
+  btn.addEventListener("click", async () => {
+    el.remove();
+    try {
+      await onAction();
+    } catch (err) {
+      toast(err?.message || "Action failed", true);
+    }
+  });
+  el.append(span, btn);
+  root.appendChild(el);
+  setTimeout(() => el.remove(), 5200);
+}
+
+/**
+ * Units that mean "sold by weight" (issue #4). A buy_unit like "lb" or "oz" means the
+ * quantity IS a weight, whereas "1 lb pack" / "15 oz can" means a package count.
+ */
+const WEIGHT_UNIT_RE = /^(lb|lbs|pound|pounds|oz|ounce|ounces|kg|kgs|kilogram|kilograms|g|gram|grams)\.?$/i;
+
+export function isWeightUnit(unit) {
+  return WEIGHT_UNIT_RE.test(String(unit || "").trim());
+}
+
+export function weightUnitLabel(unit) {
+  const u = String(unit || "").trim().toLowerCase().replace(/\.$/, "");
+  if (["lb", "lbs", "pound", "pounds"].includes(u)) return "lb";
+  if (["oz", "ounce", "ounces"].includes(u)) return "oz";
+  if (["kg", "kgs", "kilogram", "kilograms"].includes(u)) return "kg";
+  if (["g", "gram", "grams"].includes(u)) return "g";
+  return u;
+}
+
+/**
+ * Render either a distinct sky-blue weight badge (e.g. "1.5 lb") for items sold by
+ * weight, OR the standard count badge ("1×", "2×") + optional package pill (issue #4).
+ */
+export function renderQtyOrWeightBadge(qty, unit, { title = "" } = {}) {
+  const num = Number(qty);
+  const safeNum = Number.isNaN(num) || num <= 0 ? 1 : num;
+  if (isWeightUnit(unit)) {
+    const uLabel = weightUnitLabel(unit);
+    const tAttr = title ? ` title="${esc(title)}"` : ` title="Sold by weight (${esc(uLabel)})"`;
+    return {
+      isWeight: true,
+      badgeHtml: `<span class="weight-badge"${tAttr}>${fmtQty(safeNum)} ${esc(uLabel)}</span>`,
+      unitPillHtml: "",
+    };
+  }
+  const isMulti = safeNum > 1;
+  const tAttr = title ? ` title="${esc(title)}"` : "";
+  return {
+    isWeight: false,
+    badgeHtml: `<span class="qty-badge ${isMulti ? "multi" : ""}"${tAttr}>${fmtQty(safeNum)}×</span>`,
+    unitPillHtml: unit ? `<span class="unit-pill">${esc(unit)}</span>` : "",
+  };
+}
+
+/**
+ * Overflow ("⋯ More") menu used to tuck secondary actions away (issues #1 / #2).
+ * items: [{ id, label, danger?, hidden? }] — each item renders as a <button id="..."> so
+ * existing `document.getElementById(id).addEventListener(...)` bindings keep working.
+ * Call bindOverflowMenus(container) after injecting the HTML.
+ */
+export function overflowMenu(items, { label = "⋯", title = "More actions", align = "right" } = {}) {
+  const visible = (items || []).filter((it) => it && !it.hidden);
+  if (!visible.length) return "";
+  return `
+    <div class="overflow-wrap">
+      <button type="button" class="btn btn-sm overflow-toggle" aria-haspopup="true" aria-expanded="false" title="${esc(title)}">${esc(label)}</button>
+      <div class="overflow-menu ${align === "left" ? "align-left" : ""}" role="menu" hidden>
+        ${visible.map((it) => `
+          <button type="button" role="menuitem" class="overflow-item ${it.danger ? "danger" : ""}" ${it.id ? `id="${esc(it.id)}"` : ""} ${it.data ? Object.entries(it.data).map(([k, v]) => `data-${esc(k)}="${esc(v)}"`).join(" ") : ""}>${esc(it.label)}</button>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+let _overflowDocListenerBound = false;
+
+function _closeAllOverflowMenus(except = null) {
+  document.querySelectorAll(".overflow-menu").forEach((m) => {
+    if (m !== except) {
+      m.hidden = true;
+      m.parentElement?.querySelector(".overflow-toggle")?.setAttribute("aria-expanded", "false");
+    }
+  });
+}
+
+export function bindOverflowMenus(root = document) {
+  if (!_overflowDocListenerBound) {
+    _overflowDocListenerBound = true;
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".overflow-wrap")) _closeAllOverflowMenus();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") _closeAllOverflowMenus();
+    });
+  }
+  root.querySelectorAll(".overflow-wrap").forEach((wrap) => {
+    if (wrap.dataset.bound) return;
+    wrap.dataset.bound = "1";
+    const toggle = wrap.querySelector(".overflow-toggle");
+    const menu = wrap.querySelector(".overflow-menu");
+    toggle?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = menu.hidden;
+      _closeAllOverflowMenus(menu);
+      menu.hidden = !willOpen;
+      toggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    });
+    menu?.querySelectorAll(".overflow-item").forEach((item) => {
+      // Close after the item's own click handler runs
+      item.addEventListener("click", () => setTimeout(() => _closeAllOverflowMenus(), 0));
+    });
+  });
+}
+
 export function openModal(title, bodyHtml, onMount) {
   const root = document.getElementById("modal-root");
   root.innerHTML = `

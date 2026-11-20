@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -108,8 +109,21 @@ CREATE TABLE IF NOT EXISTS item_store_locations (
     store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
     department TEXT NOT NULL,
     aisle TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual',
     updated_at TEXT NOT NULL,
     UNIQUE(item_key, store_id)
+);
+
+CREATE TABLE IF NOT EXISTS kroger_product_prefs (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item_key TEXT NOT NULL,
+    upc TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    brand TEXT NOT NULL DEFAULT '',
+    size TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, item_key)
 );
 
 CREATE TABLE IF NOT EXISTS recipes (
@@ -210,6 +224,13 @@ CREATE TABLE IF NOT EXISTS shopping_lists (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS staple_lists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS weekly_template_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -220,7 +241,17 @@ CREATE TABLE IF NOT EXISTS weekly_template_items (
     notes TEXT NOT NULL DEFAULT '',
     is_active INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    staple_list_id INTEGER REFERENCES staple_lists(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_recipe_prefs (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, recipe_id)
 );
 
 CREATE TABLE IF NOT EXISTS pantry_items (
@@ -243,6 +274,7 @@ CREATE TABLE IF NOT EXISTS shopping_list_items (
     needed_summary TEXT NOT NULL DEFAULT '',
     department TEXT NOT NULL DEFAULT '',
     aisle TEXT NOT NULL DEFAULT '',
+    price REAL,
     source_recipes_json TEXT NOT NULL DEFAULT '[]',
     notes TEXT NOT NULL DEFAULT '',
     checked INTEGER NOT NULL DEFAULT 0,
@@ -758,6 +790,96 @@ def _run_migrations(conn: sqlite3.Connection):
                 (cleaned_name, normalize_item_key(cleaned_name), li["id"]),
             )
 
+    _run_issue_migrations_v15(conn)
+
+
+def _run_issue_migrations_v15(conn: sqlite3.Connection):
+    """Schema for GitHub issues #3, #5, #7, #8, #9, #10 (v1.5)."""
+    now = _now_iso()
+
+    # --- #3: price lives in its own column, never in notes ---
+    sli_cols = {r["name"] for r in conn.execute("PRAGMA table_info(shopping_list_items)").fetchall()}
+    if "price" not in sli_cols:
+        conn.execute("ALTER TABLE shopping_list_items ADD COLUMN price REAL")
+    # Move auto-filled "$3.49 @ Kroger" notes into the price column, and drop auto "Weekly staple" notes
+    price_rows = conn.execute(
+        "SELECT id, notes FROM shopping_list_items WHERE notes LIKE '$%@ Kroger'"
+    ).fetchall()
+    for pr in price_rows:
+        m = re.match(r"^\$(\d+(?:\.\d+)?) @ Kroger$", (pr["notes"] or "").strip())
+        if m:
+            conn.execute(
+                "UPDATE shopping_list_items SET price = ?, notes = '' WHERE id = ?",
+                (float(m.group(1)), pr["id"]),
+            )
+    conn.execute("UPDATE shopping_list_items SET notes = '' WHERE notes IN ('Weekly staple', 'Restock pantry')")
+
+    # --- #5 / #7: remember where an aisle came from (manual vs. kroger API) ---
+    loc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(item_store_locations)").fetchall()}
+    if "source" not in loc_cols:
+        conn.execute("ALTER TABLE item_store_locations ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+
+    # --- #5: per-person preferred Kroger product for an item ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kroger_product_prefs (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            item_key TEXT NOT NULL,
+            upc TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            brand TEXT NOT NULL DEFAULT '',
+            size TEXT NOT NULL DEFAULT '',
+            image_url TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, item_key)
+        )
+        """
+    )
+
+    # --- #9: multiple named staple lists (formerly the single "Weekly Template") ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS staple_lists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    tpl_cols = {r["name"] for r in conn.execute("PRAGMA table_info(weekly_template_items)").fetchall()}
+    if "staple_list_id" not in tpl_cols:
+        conn.execute(
+            "ALTER TABLE weekly_template_items ADD COLUMN staple_list_id INTEGER REFERENCES staple_lists(id) ON DELETE CASCADE"
+        )
+    first_staple = conn.execute("SELECT id FROM staple_lists ORDER BY sort_order ASC, id ASC LIMIT 1").fetchone()
+    if not first_staple:
+        cur = conn.execute(
+            "INSERT INTO staple_lists (name, sort_order, created_at) VALUES (?, 1, ?)",
+            ("Weekly Staples", now),
+        )
+        first_staple_id = cur.lastrowid
+    else:
+        first_staple_id = first_staple["id"]
+    conn.execute(
+        "UPDATE weekly_template_items SET staple_list_id = ? WHERE staple_list_id IS NULL",
+        (first_staple_id,),
+    )
+
+    # --- #10: per-user recipe page layout (pinned recipes + custom order) ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_recipe_prefs (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, recipe_id)
+        )
+        """
+    )
+
 
 def init_db():
     with get_db() as conn:
@@ -840,13 +962,15 @@ def _seed_defaults(conn: sqlite3.Connection):
     # Seed weekly template items if empty
     tpl_count = conn.execute("SELECT COUNT(*) FROM weekly_template_items").fetchone()[0]
     if tpl_count == 0:
+        staple_row = conn.execute("SELECT id FROM staple_lists ORDER BY sort_order ASC, id ASC LIMIT 1").fetchone()
+        staple_id = staple_row["id"] if staple_row else None
         for idx, (tname, tkey, tqty, tunit, tdept) in enumerate(SEED_WEEKLY_TEMPLATE, start=1):
             conn.execute(
                 """
-                INSERT INTO weekly_template_items (name, item_key, buy_qty, buy_unit, department, notes, is_active, sort_order, created_at)
-                VALUES (?, ?, ?, ?, ?, '', 1, ?, ?)
+                INSERT INTO weekly_template_items (name, item_key, buy_qty, buy_unit, department, notes, is_active, sort_order, created_at, staple_list_id)
+                VALUES (?, ?, ?, ?, ?, '', 1, ?, ?, ?)
                 """,
-                (tname, tkey, tqty, tunit, tdept, idx, now),
+                (tname, tkey, tqty, tunit, tdept, idx, now, staple_id),
             )
 
     # Seed pantry items if empty

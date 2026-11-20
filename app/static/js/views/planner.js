@@ -7,10 +7,24 @@ import {
   renderMacroStrip,
   setShortcutVerifiedFlag,
 } from "../nutrition_ui.js";
-import { esc, fmtQty, openModal, toast } from "../utils.js";
+import {
+  bindOverflowMenus,
+  esc,
+  fmtQty,
+  openModal,
+  overflowMenu,
+  renderQtyOrWeightBadge,
+  toast,
+} from "../utils.js";
 
 const CALENDAR_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MEAL_SLOTS = ["Breakfast", "Lunch", "Dinner", "Snacks"];
+const SLOT_BADGES = { Breakfast: "B", Lunch: "L", Dinner: "D", Snacks: "S" };
+
+function defaultTodayShort() {
+  const map = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  return map[new Date().getDay()] || "Mon";
+}
 
 export async function renderPlannerView(container, state, navigate) {
   if (state.shortcutJustVerified) {
@@ -33,14 +47,21 @@ export async function renderPlannerView(container, state, navigate) {
     }
   }
 
-  let planItems = await api("/api/planner");
-  let calendarData = await api("/api/planner/calendar");
-  let recipes = await api("/api/recipes");
-  const lists = await api("/api/lists");
-  let templateItems = await api("/api/lists/template/items");
+  let [planItems, calendarData, recipes, lists, stapleLists, templateItems] = await Promise.all([
+    api("/api/planner"),
+    api("/api/planner/calendar"),
+    api("/api/recipes"),
+    api("/api/lists"),
+    api("/api/lists/staple-lists").catch(() => []),
+    api("/api/lists/template/items").catch(() => []),
+  ]);
+
+  let plannerTab = state.plannerTab || "plan"; // "plan" | "pick"
   let search = "";
   let showCalendar = state.showPlannerCalendar !== false;
   let personFilter = state.plannerPersonFilter || "ALL";
+  let selectedDay = state.plannerCalDay || defaultTodayShort();
+  let showFullWeekMobile = Boolean(state.plannerFullWeekMobile);
 
   async function refreshPlannerState() {
     [planItems, calendarData] = await Promise.all([
@@ -81,268 +102,277 @@ export async function renderPlannerView(container, state, navigate) {
     };
   }
 
+  function renderDayCard(day, slots, shortcutOk, householdSize) {
+    const rawDaySlots = slots.filter((s) => s.day_name === day);
+    const orderedDaySlots = [...rawDaySlots].sort(
+      (a, b) => MEAL_SLOTS.indexOf(a.meal_slot) - MEAL_SLOTS.indexOf(b.meal_slot) || a.id - b.id
+    );
+    const activeDaySlots = filterSlotsForPerson(orderedDaySlots);
+    const totals = sumDayMacros(activeDaySlots);
+    const allDayLogged = activeDaySlots.length > 0 && activeDaySlots.every((s) => Boolean(s.logged_at));
+    const logBtnClass = !shortcutOk
+      ? "btn-locked"
+      : (allDayLogged ? "btn-log-done" : "btn-log-ready");
+    const logBtnLabel = !shortcutOk
+      ? "🔒"
+      : (allDayLogged ? "✓" : "📲");
+
+    return `
+      <div class="compact-day-card">
+        <div class="compact-day-header">
+          <div class="row" style="gap: 6px;">
+            <span>${esc(day)}</span>
+            ${totals.hasAny ? `<span class="macro-chip cal">${totals.calories} kcal</span>` : ""}
+          </div>
+          <div class="row" style="gap: 4px;">
+            ${activeDaySlots.length > 0 ? `
+              <button class="btn btn-sm log-day-btn ${logBtnClass}" data-day="${esc(day)}" type="button"
+                style="min-height: 26px; padding: 2px 8px; font-size: 0.74rem;"
+                title="${shortcutOk ? `Log ${day}'s macros (${totals.calories} kcal)` : "Setup iOS Shortcut to unlock"}">
+                ${logBtnLabel}
+              </button>
+            ` : ""}
+            <button class="btn btn-sm add-cal-slot-btn" data-day="${esc(day)}" data-slot="Dinner" type="button"
+              style="min-height: 26px; padding: 2px 9px; font-size: 0.8rem;" title="Add meal to ${esc(day)}">+</button>
+          </div>
+        </div>
+
+        <div class="compact-day-body">
+          ${orderedDaySlots.length === 0 ? `
+            <div class="small muted" style="padding: 4px 2px;">Open — tap + to add</div>
+          ` : orderedDaySlots.map((entry) => {
+            const badge = SLOT_BADGES[entry.meal_slot] || (entry.meal_slot || "M").slice(0, 1).toUpperCase();
+            const whoLabel = entry.person_name || "Everyone";
+            const perEaSuffix = entry.is_everyone && householdSize > 1 ? "/ea" : "";
+            return `
+              <div class="compact-slot-row">
+                <span class="slot-badge" title="${esc(entry.meal_slot)}">${esc(badge)}</span>
+                <div class="grow" style="min-width: 0;">
+                  <div class="row-wrap" style="gap: 5px; align-items: baseline;">
+                    <span style="font-weight: 700;">${esc(entry.title)}</span>
+                    <span class="badge" style="font-size: 0.7rem;">${fmtQty(entry.servings_used)} srv</span>
+                    <span class="person-tag">${esc(whoLabel)}</span>
+                  </div>
+                  ${(entry.calories || entry.notes) ? `
+                    <div class="small muted" style="font-size: 0.72rem; margin-top: 2px;">
+                      ${entry.calories ? `${Math.round(entry.calories)} kcal${perEaSuffix} · ${Math.round(Number(entry.protein_g || 0))}g P` : ""}
+                      ${entry.logged_at ? ` · <strong style="color: var(--primary);">✓ Logged</strong>` : ""}
+                      ${entry.notes ? ` · ${esc(entry.notes)}` : ""}
+                    </div>
+                  ` : ""}
+                </div>
+                <div class="row" style="gap: 2px; flex-shrink: 0;">
+                  <button class="btn btn-sm log-slot-btn ${shortcutOk ? (entry.logged_at ? "btn-log-done" : "btn-log-ready") : "btn-locked"}"
+                    data-slot-id="${entry.id}" type="button"
+                    style="min-height: 24px; padding: 0 6px; font-size: 0.72rem;"
+                    title="${shortcutOk ? "Log meal via iOS Shortcut" : "Setup Shortcut first"}">
+                    ${shortcutOk ? (entry.logged_at ? "✓" : "📲") : "🔒"}
+                  </button>
+                  <button class="btn btn-sm del-cal-slot-btn" data-id="${entry.id}" type="button"
+                    style="min-height: 24px; padding: 0 5px; font-size: 0.74rem; border: none; background: transparent; color: var(--text-muted);"
+                    title="Remove">✕</button>
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }
+
   function render() {
+    const slots = calendarData?.slots || [];
+    const members = calendarData?.household_members || [];
+    const householdSize = Number(calendarData?.household_size) || 2;
+    const shortcutOk = isShortcutReady(state);
+    const isMobile = window.innerWidth < 720;
+
     const filteredRecipes = recipes.filter((r) => {
       if (!search.trim()) return true;
       const q = search.trim().toLowerCase();
       return r.title.toLowerCase().includes(q) || r.tags.some((t) => t.toLowerCase().includes(q));
     });
 
-    const slots = calendarData?.slots || [];
-    const members = calendarData?.household_members || [];
-    const shortcutOk = isShortcutReady(state);
+    const planCountByRecipeId = new Map();
+    for (const p of planItems) {
+      planCountByRecipeId.set(p.recipe_id, (planCountByRecipeId.get(p.recipe_id) || 0) + 1);
+    }
 
     container.innerHTML = `
       <div class="page-header">
         <div>
-          <h1 class="page-title">What do we want to eat this week?</h1>
-          <p class="page-subtitle">Pick your meals, scale servings, optionally map out your week, and generate your grocery list</p>
+          <h1 class="page-title">This Week</h1>
+          <p class="page-subtitle">Pick meals, scale servings, map your week &amp; build your grocery list</p>
         </div>
-        <button class="btn btn-primary" id="build-list-btn">
-          Build Shopping List (${planItems.length} meals + Template)
+        <button class="btn btn-primary btn-sm" id="build-list-btn">
+          Build List (${planItems.length})
         </button>
       </div>
 
-      <div class="stack-lg">
-        <!-- 1. This Week's Menu & Remaining Servings Pool -->
-        <div class="card stack-md">
-          <div class="row-wrap" style="justify-content: space-between;">
-            <div>
-              <h2 style="margin: 0; font-size: 1.08rem;">This Week's Menu &amp; Servings Pool (${planItems.length})</h2>
-              <p class="small muted" style="margin: 2px 0 0;">
-                Shows how many servings are still available to place on the optional calendar below.
-              </p>
-            </div>
-            ${planItems.length ? `<button class="btn btn-sm btn-danger" id="clear-plan-btn">Clear Menu</button>` : ""}
-          </div>
+      <div class="subtabs">
+        <button type="button" class="subtab ${plannerTab === "plan" ? "active" : ""}" data-ptab="plan">
+          Meal Plan (${planItems.length})
+        </button>
+        <button type="button" class="subtab ${plannerTab === "pick" ? "active" : ""}" data-ptab="pick">
+          Pick Recipes (${recipes.length})
+        </button>
+      </div>
 
-          ${planItems.length === 0 ? `
-            <div class="empty-state" style="padding: 20px;">
-              <p style="margin: 0 0 6px;">No meals selected for this week yet.</p>
-              <p class="small" style="margin: 0;">Pick recipes below or click <strong>Build Shopping List</strong> to start from your Weekly Template staples.</p>
+      ${plannerTab === "plan" ? `
+        <div class="stack-md">
+          <!-- 1. Compact Menu & Servings Pool -->
+          <div class="card stack-sm">
+            <div class="row-wrap" style="justify-content: space-between;">
+              <h2 style="margin: 0; font-size: 1.04rem;">Menu (${planItems.length})</h2>
+              <div class="row" style="gap: 6px;">
+                <button type="button" class="btn btn-sm" id="go-pick-recipes-btn">+ Pick Recipes</button>
+                ${planItems.length ? `<button class="btn btn-sm btn-danger" id="clear-plan-btn">Clear</button>` : ""}
+              </div>
             </div>
-          ` : `
-            <div class="stack-sm">
-              ${planItems.map((p) => {
-                const rem = Number(p.remaining_servings ?? p.effective_servings);
-                const eff = Number(p.effective_servings);
-                const allPlaced = rem <= 0;
-                return `
-                  <div class="card" style="padding: 12px; background: var(--bg);">
-                    <div class="row-wrap" style="justify-content: space-between;">
-                      <div class="row grow">
+
+            ${planItems.length === 0 ? `
+              <div class="empty-state" style="padding: 16px;">
+                <p style="margin: 0 0 8px;">No recipes picked for this week yet.</p>
+                <p class="small" style="margin: 0;">Tap <strong>+ Pick Recipes</strong> or click <strong>Build List</strong> to add staples.</p>
+              </div>
+            ` : `
+              <div class="stack-sm">
+                ${planItems.map((p) => {
+                  const rem = Number(p.remaining_servings ?? p.effective_servings);
+                  const eff = Number(p.effective_servings);
+                  const allPlaced = rem <= 0;
+                  return `
+                    <div class="menu-compact-row">
+                      <div class="row grow" style="min-width: 0;">
                         ${p.image_url ? `<img class="plan-thumb" src="${esc(p.image_url)}" alt="" loading="lazy" />` : ""}
-                        <div class="grow">
-                          <div class="row-wrap" style="gap: 8px;">
+                        <div class="grow" style="min-width: 0;">
+                          <div class="row-wrap" style="gap: 6px;">
                             <span style="font-weight: 700;">${esc(p.title)}</span>
                             <span class="servings-pill ${allPlaced ? "done" : ""}">
-                              ${allPlaced
-                                ? `All ${fmtQty(eff)} servings placed ✓`
-                                : `${fmtQty(rem)}x of ${fmtQty(eff)} servings left`}
+                              ${allPlaced ? `All ${fmtQty(eff)} placed ✓` : `${fmtQty(rem)} / ${fmtQty(eff)} left`}
                             </span>
                           </div>
-                          <div class="row-wrap" style="gap: 8px; margin-top: 3px;">
-                            <span class="small muted">
-                              Total batch: ${fmtQty(eff)} portions ${p.added_by_name ? `· Added by ${esc(p.added_by_name)}` : ""}
-                            </span>
+                          <div class="row-wrap" style="gap: 6px; margin-top: 3px;">
                             ${renderMacroStrip(p, true)}
                           </div>
                         </div>
                       </div>
-                      <div class="row-wrap" style="gap: 6px;">
-                        <button class="btn btn-sm plan-loseit-btn" data-recipe-id="${p.recipe_id}" type="button" title="View Lose It! Quick Card & Portion Calculator">
-                          📋 Lose It! Card
-                        </button>
-                        <button class="btn btn-sm plan-schedule-btn" data-plan-id="${p.id}" type="button" title="Place servings on a day/meal slot">
-                          + Place on Day
-                        </button>
-                        <select class="select plan-scale-select" data-id="${p.id}" style="width: 82px; min-height: 34px; padding: 4px 8px;" title="Batch scale">
+                      <div class="row" style="gap: 6px; flex-shrink: 0;">
+                        <button class="btn btn-sm plan-schedule-btn" data-plan-id="${p.id}" type="button">+ Day</button>
+                        <select class="select plan-scale-select" data-id="${p.id}" style="width: 72px; min-height: 32px; padding: 3px 6px;" title="Batch scale">
                           ${[0.5, 1, 1.5, 2, 3].map((s) => `<option value="${s}" ${Math.abs(s - p.scale) < 0.01 ? "selected" : ""}>${s}x</option>`).join("")}
                         </select>
-                        <button class="btn btn-sm btn-danger plan-remove-btn" data-id="${p.id}" title="Remove from week">✕</button>
+                        ${overflowMenu([
+                          { label: "📋 Lose It! / Macros", data: { "plan-action": "loseit", "recipe-id": p.recipe_id } },
+                          { label: "Remove from Menu", danger: true, data: { "plan-action": "remove", "plan-id": p.id } },
+                        ], { title: "Meal actions" })}
                       </div>
                     </div>
-                  </div>
-                `;
-              }).join("")}
-            </div>
-          `}
-        </div>
-
-        <!-- 2. Optional Weekly Meal & Leftover Calendar (FB-11 + FB-14) -->
-        <div class="card stack-md">
-          <div class="row-wrap" style="justify-content: space-between;">
-            <div>
-              <div class="row" style="gap: 8px;">
-                <h2 style="margin: 0; font-size: 1.08rem;">Weekly Meal, Macro &amp; Leftover Calendar</h2>
-                <span class="badge">Optional</span>
+                  `;
+                }).join("")}
               </div>
-              <p class="small muted" style="margin: 2px 0 0;">
-                Plan Breakfast, Lunch, Dinner &amp; Snacks by day, assign leftovers per person, and log macros to Apple Health via iOS Shortcut.
-              </p>
-            </div>
-            <div class="row-wrap" style="gap: 8px;">
-              ${slots.length ? `<button class="btn btn-sm btn-danger" id="clear-calendar-btn" type="button">Clear Calendar</button>` : ""}
-              <button class="btn btn-sm" id="toggle-calendar-btn" type="button">
-                ${showCalendar ? "Hide Calendar" : `Show Calendar (${slots.length})`}
-              </button>
-            </div>
+            `}
           </div>
 
-          ${showCalendar ? `
-            <!-- 2-Step iOS Shortcut Verification Banner -->
-            <div class="step-wizard-banner ${shortcutOk ? "ready" : ""}">
-              <div>
-                ${shortcutOk ? `
-                  <div style="font-weight: 800; color: var(--primary); font-size: 0.9rem;">
-                    ✓ Step 2 Active: "PantryCart Log Macros" iOS Shortcut Ready
-                  </div>
-                  <div class="small muted">
-                    Press <strong>📲 Log Meals</strong> on any day card below to log that day's calories &amp; macros directly on iPhone/iPad.
-                  </div>
-                ` : `
-                  <div style="font-weight: 800; font-size: 0.9rem;">
-                    Step 1 of 2: Set up &amp; Verify iOS Shortcut to Unlock "Log Meals"
-                  </div>
-                  <div class="small muted">
-                    <strong>Log Meals</strong> buttons stay grayed out (🔒) until your device's shortcut is confirmed.
-                  </div>
-                `}
-              </div>
-              <div class="row-wrap" style="gap: 8px;">
-                ${members.length ? `
-                  <select class="select" id="person-macro-filter" style="width: auto; min-height: 34px; padding: 4px 10px;" title="Filter daily calorie totals & logging by person">
-                    <option value="ALL" ${personFilter === "ALL" ? "selected" : ""}>Show Totals: Everyone</option>
-                    ${members.map((m) => `<option value="${esc(m)}" ${personFilter === m ? "selected" : ""}>Totals for: ${esc(m)}</option>`).join("")}
-                  </select>
-                ` : ""}
-                <button class="btn btn-sm ${shortcutOk ? "" : "btn-primary"}" id="setup-shortcut-btn" type="button">
-                  ${shortcutOk ? "⚙️ Shortcut Setup / Test" : "Step 1: Setup & Verify Shortcut"}
+          <!-- 2. Compact Weekly Meal Calendar (Issue #8) -->
+          <div class="card stack-sm">
+            <div class="row-wrap" style="justify-content: space-between; gap: 8px;">
+              <div class="row" style="gap: 8px;">
+                <h2 style="margin: 0; font-size: 1.04rem;">Meal Calendar</h2>
+                <button class="btn btn-sm" id="toggle-calendar-btn" type="button" style="min-height: 28px; padding: 2px 9px;">
+                  ${showCalendar ? "Hide" : `Show (${slots.length})`}
                 </button>
               </div>
-            </div>
-
-            <div class="calendar-grid">
-              ${CALENDAR_DAYS.map((day) => {
-                const rawDaySlots = slots.filter((s) => s.day_name === day);
-                const activeDaySlots = filterSlotsForPerson(rawDaySlots);
-                const totals = sumDayMacros(activeDaySlots);
-                const allDayLogged = activeDaySlots.length > 0 && activeDaySlots.every((s) => Boolean(s.logged_at));
-                const logBtnClass = !shortcutOk
-                  ? "btn-locked"
-                  : (allDayLogged ? "btn-log-done" : "btn-log-ready");
-                const logBtnLabel = !shortcutOk
-                  ? "🔒 Log Meals"
-                  : (allDayLogged ? "✓ Logged" : "📲 Log Meals");
-
-                return `
-                  <div class="day-card">
-                    <div class="day-card-header">
-                      <span>${esc(day)}</span>
-                      <div class="row" style="gap: 6px;">
-                        ${activeDaySlots.length > 0 ? `
-                          <button class="btn btn-sm log-day-btn ${logBtnClass}" data-day="${esc(day)}" type="button"
-                            style="min-height: 26px; padding: 2px 9px; font-size: 0.76rem;"
-                            title="${shortcutOk ? `Send ${day}'s macros to iOS Shortcut` : "Complete Step 1 Shortcut Setup to unlock"}">
-                            ${logBtnLabel}
-                          </button>
-                        ` : `<span class="small muted" style="font-weight: 600;">Open</span>`}
-                      </div>
-                    </div>
-
-                    ${totals.hasAny ? `
-                      <div class="day-macro-bar">
-                        <span class="macro-chip cal">${totals.calories} kcal</span>
-                        <span class="macro-chip pro">${totals.protein_g}g P</span>
-                        <span class="macro-chip">${totals.carbs_g}g C</span>
-                        <span class="macro-chip">${totals.fat_g}g F</span>
-                      </div>
-                    ` : ""}
-
-                    ${MEAL_SLOTS.map((mealSlot) => {
-                      const slotItems = rawDaySlots.filter((s) => s.meal_slot === mealSlot);
-                      return `
-                        <div class="meal-slot-section">
-                          <div class="meal-slot-header">
-                            <span>${esc(mealSlot)}</span>
-                            <button class="btn btn-sm add-cal-slot-btn" data-day="${esc(day)}" data-slot="${esc(mealSlot)}" type="button" style="min-height: 22px; padding: 1px 7px; font-size: 0.74rem;">
-                              + Add
-                            </button>
-                          </div>
-                          ${slotItems.map((entry) => `
-                            <div class="slot-entry">
-                              <div class="grow">
-                                <div class="row-wrap" style="gap: 5px;">
-                                  <span class="qty-badge" style="font-size: 0.72rem; padding: 1px 6px;">${fmtQty(entry.servings_used)} srv</span>
-                                  <span style="font-weight: 600;">${esc(entry.title)}</span>
-                                  ${entry.person_name ? `<span class="person-tag">${esc(entry.person_name)}</span>` : ""}
-                                </div>
-                                ${entry.calories ? `
-                                  <div class="small muted" style="font-size: 0.72rem; margin-top: 2px;">
-                                    ${Math.round(entry.calories)} kcal · ${Math.round(Number(entry.protein_g || 0))}g P · ${Math.round(Number(entry.carbs_g || 0))}g C · ${Math.round(Number(entry.fat_g || 0))}g F
-                                    ${entry.logged_at ? `<span style="color: var(--primary); font-weight: 700;"> · ✓ Logged</span>` : ""}
-                                  </div>
-                                ` : ""}
-                                ${entry.notes ? `<div class="small muted" style="font-size: 0.74rem; margin-top: 2px;">${esc(entry.notes)}</div>` : ""}
-                              </div>
-                              <div class="row" style="gap: 2px; flex-shrink: 0;">
-                                <button class="btn btn-sm log-slot-btn ${shortcutOk ? (entry.logged_at ? "btn-log-done" : "btn-log-ready") : "btn-locked"}"
-                                  data-slot-id="${entry.id}" type="button"
-                                  style="min-height: 22px; padding: 0 6px; font-size: 0.72rem;"
-                                  title="${shortcutOk ? "Log this meal via iOS Shortcut" : "Setup Shortcut in Step 1 first"}">
-                                  ${shortcutOk ? (entry.logged_at ? "✓" : "📲") : "🔒"}
-                                </button>
-                                <button class="btn btn-sm del-cal-slot-btn" data-id="${entry.id}" type="button" style="min-height: 22px; padding: 0 5px; font-size: 0.74rem; border: none; background: transparent; color: var(--text-muted);" title="Remove from slot">✕</button>
-                              </div>
-                            </div>
-                          `).join("")}
-                        </div>
-                      `;
-                    }).join("")}
+              ${showCalendar ? `
+                <div class="row-wrap" style="gap: 6px;">
+                  <div class="household-size-stepper" title="How many servings 'Everyone' deducts from a recipe batch">
+                    <span class="muted">Everyone =</span>
+                    <button type="button" id="hh-dec-btn" ${householdSize <= 1 ? "disabled" : ""}>−</button>
+                    <span>${householdSize}</span>
+                    <button type="button" id="hh-inc-btn" ${householdSize >= 20 ? "disabled" : ""}>+</button>
                   </div>
-                `;
-              }).join("")}
+                  ${members.length ? `
+                    <select class="select" id="person-macro-filter" style="width: auto; min-height: 30px; padding: 3px 8px; font-size: 0.82rem;" title="Filter daily calorie totals">
+                      <option value="ALL" ${personFilter === "ALL" ? "selected" : ""}>Totals: All</option>
+                      ${members.map((m) => `<option value="${esc(m)}" ${personFilter === m ? "selected" : ""}>${esc(m)}</option>`).join("")}
+                    </select>
+                  ` : ""}
+                  <button class="btn btn-sm ${shortcutOk ? "" : "btn-accent"}" id="setup-shortcut-btn" type="button" style="min-height: 30px; padding: 2px 9px;">
+                    ${shortcutOk ? "📲 Shortcut ✓" : "🔒 Shortcut"}
+                  </button>
+                  ${isMobile ? `
+                    <button class="btn btn-sm" id="toggle-mobile-week-btn" type="button" style="min-height: 30px; padding: 2px 9px;">
+                      ${showFullWeekMobile ? "1 Day" : "Full Week"}
+                    </button>
+                  ` : ""}
+                  ${overflowMenu([
+                    { id: "clear-calendar-btn", label: "Clear Calendar", danger: true, hidden: slots.length === 0 },
+                  ], { title: "Calendar options" })}
+                </div>
+              ` : ""}
             </div>
-          ` : ""}
-        </div>
 
-        <!-- 3. Recipe Picker -->
+            ${showCalendar ? `
+              ${isMobile && !showFullWeekMobile ? `
+                <div class="day-pill-bar">
+                  ${CALENDAR_DAYS.map((day) => {
+                    const cnt = slots.filter((s) => s.day_name === day).length;
+                    return `
+                      <button type="button" class="day-pill ${day === selectedDay ? "active" : ""}" data-cal-day="${esc(day)}">
+                        <span>${esc(day)}</span>
+                        <span class="day-dot">${cnt > 0 ? cnt : "·"}</span>
+                      </button>
+                    `;
+                  }).join("")}
+                </div>
+                ${renderDayCard(selectedDay, slots, shortcutOk, householdSize)}
+              ` : `
+                <div class="compact-week-grid">
+                  ${CALENDAR_DAYS.map((day) => renderDayCard(day, slots, shortcutOk, householdSize)).join("")}
+                </div>
+              `}
+            ` : ""}
+          </div>
+        </div>
+      ` : `
+        <!-- Pick Recipes subtab -->
         <div class="stack-md">
-          <div class="row-wrap" style="justify-content: space-between;">
-            <h2 style="margin: 0; font-size: 1.08rem;">Add Recipes to This Week</h2>
-            <input class="input" id="planner-search" value="${esc(search)}" placeholder="Search recipes or tags..." style="max-width: 280px;" />
-          </div>
-
+          <input class="input" id="planner-search" value="${esc(search)}" placeholder="Search recipes or tags..." />
           <div class="recipe-grid">
-            ${filteredRecipes.map((r) => `
-              <div class="recipe-card">
-                ${r.image_url ? `<img class="recipe-cover" src="${esc(r.image_url)}" alt="${esc(r.title)}" loading="lazy" />` : ""}
-                <div class="row" style="justify-content: space-between; align-items: flex-start;">
-                  <h3>${esc(r.title)}</h3>
-                  <span class="badge">${fmtQty(r.custom_portions || r.servings)} srv</span>
+            ${filteredRecipes.map((r) => {
+              const inMenuCount = planCountByRecipeId.get(r.id) || 0;
+              return `
+                <div class="recipe-card">
+                  ${r.image_url ? `<img class="recipe-cover" src="${esc(r.image_url)}" alt="${esc(r.title)}" loading="lazy" />` : ""}
+                  <div class="row" style="justify-content: space-between; align-items: flex-start;">
+                    <h3>${esc(r.title)}</h3>
+                    <span class="badge">${fmtQty(r.custom_portions || r.servings)} srv</span>
+                  </div>
+                  <div class="row-wrap">
+                    ${inMenuCount ? `<span class="badge badge-primary">In Menu${inMenuCount > 1 ? ` (${inMenuCount})` : ""} ✓</span>` : ""}
+                    ${r.tags.map((t) => `<span class="badge">${esc(t)}</span>`).join("")}
+                    ${renderMacroStrip(r, true)}
+                  </div>
+                  <div class="row" style="margin-top: auto; padding-top: 6px; justify-content: space-between;">
+                    <span class="small muted">${r.ingredients.length} ingredients</span>
+                    <button class="btn btn-primary btn-sm add-plan-btn" data-recipe-id="${r.id}">+ Add to Week</button>
+                  </div>
                 </div>
-                ${r.description ? `<p class="small muted" style="margin: 0;">${esc(r.description)}</p>` : ""}
-                <div class="row-wrap">
-                  ${r.tags.map((t) => `<span class="badge badge-primary">${esc(t)}</span>`).join("")}
-                  ${renderMacroStrip(r, true)}
-                </div>
-                <div class="row" style="margin-top: auto; padding-top: 6px; justify-content: space-between;">
-                  <span class="small muted">${r.ingredients.length} ingredients</span>
-                  <button class="btn btn-primary btn-sm add-plan-btn" data-recipe-id="${r.id}">+ Add to Week</button>
-                </div>
-              </div>
-            `).join("")}
+              `;
+            }).join("")}
           </div>
         </div>
-      </div>
+      `}
     `;
 
-    bindEvents();
+    bindOverflowMenus(container);
+    bindEvents(householdSize);
   }
 
   function openScheduleSlotModal({ defaultDay = "Mon", defaultSlot = "Dinner", defaultPlanItemId = null } = {}) {
     const members = calendarData?.household_members || [];
     const listSnacks = calendarData?.list_and_snack_items || [];
+    const householdSize = Number(calendarData?.household_size) || 2;
     let sourceMode = defaultPlanItemId
       ? "recipe"
       : (defaultSlot === "Snacks" && listSnacks.length ? "snack" : (planItems.length ? "recipe" : (listSnacks.length ? "snack" : "custom")));
@@ -368,13 +398,13 @@ export async function renderPlannerView(container, state, navigate) {
           <label class="field-label">What are you having?</label>
           <div class="subtabs" style="margin-bottom: 10px;">
             <button type="button" class="subtab ${sourceMode === "recipe" ? "active" : ""}" data-src-mode="recipe">
-              This Week's Recipes (${planItems.length})
+              Menu (${planItems.length})
             </button>
             <button type="button" class="subtab ${sourceMode === "snack" ? "active" : ""}" data-src-mode="snack">
-              Snacks &amp; List Items (${listSnacks.length})
+              List &amp; Snacks (${listSnacks.length})
             </button>
             <button type="button" class="subtab ${sourceMode === "custom" ? "active" : ""}" data-src-mode="custom">
-              Custom / Leftover
+              Custom
             </button>
           </div>
 
@@ -383,12 +413,12 @@ export async function renderPlannerView(container, state, navigate) {
               <select class="select" name="plan_item_id" required>
                 ${planItems.map((p) => `
                   <option value="${p.id}" ${p.id === defaultPlanItemId ? "selected" : ""}>
-                    ${esc(p.title)} (${fmtQty(p.remaining_servings)}x of ${fmtQty(p.effective_servings)} left${p.calories_per_serving ? ` · ${Math.round(p.calories_per_serving)} kcal` : ""})
+                    ${esc(p.title)} (${fmtQty(p.remaining_servings)} of ${fmtQty(p.effective_servings)} left${p.calories_per_serving ? ` · ${Math.round(p.calories_per_serving)} kcal` : ""})
                   </option>
                 `).join("")}
               </select>
             ` : `
-              <p class="small muted" style="margin: 0;">No recipes in This Week's Menu yet. Switch to <strong>Snacks &amp; List Items</strong> or <strong>Custom</strong>.</p>
+              <p class="small muted" style="margin: 0;">No recipes in your Menu yet. Switch to <strong>List &amp; Snacks</strong> or <strong>Custom</strong>.</p>
             `
           ) : ""}
 
@@ -402,7 +432,7 @@ export async function renderPlannerView(container, state, navigate) {
                 `).join("")}
               </select>
             ` : `
-              <p class="small muted" style="margin: 0;">No items on your shopping list or weekly template yet.</p>
+              <p class="small muted" style="margin: 0;">No items on your shopping list or staples yet.</p>
             `
           ) : ""}
 
@@ -414,14 +444,17 @@ export async function renderPlannerView(container, state, navigate) {
         <div class="grid-2">
           <div>
             <label class="field-label">Servings Used</label>
-            <input class="input" name="servings_used" type="number" step="0.5" min="0.5" max="20" value="1" required />
+            <input class="input" name="servings_used" id="slot-servings-input" type="number" step="0.5" min="0.5" max="20" value="${householdSize}" required />
+            <div id="slot-servings-hint" class="small muted" style="margin-top: 4px;">
+              Deducts ${householdSize}× from batch (${fmtQty(1)} srv per person)
+            </div>
           </div>
           <div>
-            <label class="field-label">Who is eating this? (Optional)</label>
-            <input class="input" name="person_name" id="slot-person-input" placeholder="Blank = Everyone, or type name (e.g. Alex, Partner)" />
+            <label class="field-label">Who is eating this?</label>
+            <input class="input" name="person_name" id="slot-person-input" placeholder="Blank = Everyone (${householdSize} people)" />
             ${members.length ? `
               <div class="row-wrap" style="gap: 4px; margin-top: 5px;">
-                <button type="button" class="badge person-preset-btn" data-person="" style="border: 1px solid var(--border);">Everyone</button>
+                <button type="button" class="badge person-preset-btn" data-person="" style="border: 1px solid var(--border);">Everyone (${householdSize})</button>
                 ${members.map((m) => `
                   <button type="button" class="badge badge-primary person-preset-btn" data-person="${esc(m)}" style="border: none;">${esc(m)}</button>
                 `).join("")}
@@ -432,14 +465,27 @@ export async function renderPlannerView(container, state, navigate) {
 
         <div>
           <label class="field-label">Notes (Optional)</label>
-          <input class="input" name="notes" placeholder="e.g. Pack for work lunch, leftover night..." />
+          <input class="input" name="notes" placeholder="e.g. Pack for work lunch..." />
         </div>
 
         <button class="btn btn-primary" type="submit">Add to Calendar</button>
       </form>
     `;
 
-    openModal("Add to Weekly Meal Calendar", renderSlotModal(), (close) => {
+    openModal("Add to Meal Calendar", renderSlotModal(), (close) => {
+      const updateServingsHint = () => {
+        const personVal = (document.getElementById("slot-person-input")?.value || "").trim();
+        const srvVal = Number(document.getElementById("slot-servings-input")?.value) || 1;
+        const hintEl = document.getElementById("slot-servings-hint");
+        if (!hintEl) return;
+        const isEvery = !personVal || personVal.toLowerCase() === "everyone";
+        if (isEvery) {
+          hintEl.textContent = `Deducts ${fmtQty(srvVal)}× from batch (${fmtQty(srvVal / householdSize)} srv per person)`;
+        } else {
+          hintEl.textContent = `Deducts ${fmtQty(srvVal)}× from batch for ${personVal}`;
+        }
+      };
+
       const bindSlotModal = () => {
         document.querySelectorAll("[data-src-mode]").forEach((btn) => {
           btn.addEventListener("click", () => {
@@ -456,10 +502,17 @@ export async function renderPlannerView(container, state, navigate) {
 
         document.querySelectorAll(".person-preset-btn").forEach((btn) => {
           btn.addEventListener("click", () => {
-            const inp = document.getElementById("slot-person-input");
-            if (inp) inp.value = btn.dataset.person || "";
+            const personVal = btn.dataset.person || "";
+            const pInp = document.getElementById("slot-person-input");
+            const sInp = document.getElementById("slot-servings-input");
+            if (pInp) pInp.value = personVal;
+            if (sInp) sInp.value = personVal ? "1" : String(householdSize);
+            updateServingsHint();
           });
         });
+
+        document.getElementById("slot-person-input")?.addEventListener("input", updateServingsHint);
+        document.getElementById("slot-servings-input")?.addEventListener("input", updateServingsHint);
 
         document.getElementById("schedule-slot-form")?.addEventListener("submit", async (e) => {
           e.preventDefault();
@@ -492,6 +545,8 @@ export async function renderPlannerView(container, state, navigate) {
             },
           });
 
+          selectedDay = f.day_name.value;
+          state.plannerCalDay = selectedDay;
           await refreshPlannerState();
           close();
           render();
@@ -503,7 +558,21 @@ export async function renderPlannerView(container, state, navigate) {
     });
   }
 
-  function bindEvents() {
+  function bindEvents(householdSize) {
+    document.querySelectorAll("[data-ptab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        plannerTab = btn.dataset.ptab;
+        state.plannerTab = plannerTab;
+        render();
+      });
+    });
+
+    document.getElementById("go-pick-recipes-btn")?.addEventListener("click", () => {
+      plannerTab = "pick";
+      state.plannerTab = "pick";
+      render();
+    });
+
     document.getElementById("planner-search")?.addEventListener("input", (e) => {
       search = e.target.value;
       render();
@@ -511,6 +580,30 @@ export async function renderPlannerView(container, state, navigate) {
       el?.focus();
       el?.setSelectionRange(search.length, search.length);
     });
+
+    document.querySelectorAll("[data-cal-day]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        selectedDay = btn.dataset.calDay;
+        state.plannerCalDay = selectedDay;
+        render();
+      });
+    });
+
+    document.getElementById("toggle-mobile-week-btn")?.addEventListener("click", () => {
+      showFullWeekMobile = !showFullWeekMobile;
+      state.plannerFullWeekMobile = showFullWeekMobile;
+      render();
+    });
+
+    const updateHouseholdSize = async (nextSize) => {
+      const clamped = Math.max(1, Math.min(20, nextSize));
+      await api("/api/planner/household-size", { method: "PUT", body: { size: clamped } });
+      await refreshPlannerState();
+      render();
+      toast(`Set "Everyone" = ${clamped} servings`);
+    };
+    document.getElementById("hh-dec-btn")?.addEventListener("click", () => updateHouseholdSize(householdSize - 1));
+    document.getElementById("hh-inc-btn")?.addEventListener("click", () => updateHouseholdSize(householdSize + 1));
 
     document.getElementById("person-macro-filter")?.addEventListener("change", (e) => {
       personFilter = e.target.value;
@@ -522,7 +615,7 @@ export async function renderPlannerView(container, state, navigate) {
       openShortcutSetupModal(state, () => render());
     });
 
-    document.querySelectorAll(".plan-loseit-btn").forEach((btn) => {
+    document.querySelectorAll('[data-plan-action="loseit"]').forEach((btn) => {
       btn.addEventListener("click", () => {
         const r = recipes.find((x) => x.id === Number(btn.dataset.recipeId));
         if (!r) return;
@@ -536,10 +629,18 @@ export async function renderPlannerView(container, state, navigate) {
       });
     });
 
+    document.querySelectorAll('[data-plan-action="remove"]').forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await api(`/api/planner/${btn.dataset.planId}`, { method: "DELETE" });
+        await refreshPlannerState();
+        render();
+      });
+    });
+
     document.querySelectorAll(".log-day-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         if (!isShortcutReady(state)) {
-          toast("Complete Step 1 Shortcut Setup first to unlock Log Meals!", true);
+          toast("Setup iOS Shortcut first to unlock Log Meals!", true);
           openShortcutSetupModal(state, () => render());
           return;
         }
@@ -570,7 +671,7 @@ export async function renderPlannerView(container, state, navigate) {
     document.querySelectorAll(".log-slot-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         if (!isShortcutReady(state)) {
-          toast("Complete Step 1 Shortcut Setup first!", true);
+          toast("Setup iOS Shortcut first!", true);
           openShortcutSetupModal(state, () => render());
           return;
         }
@@ -604,14 +705,14 @@ export async function renderPlannerView(container, state, navigate) {
         });
         await refreshPlannerState();
         render();
-        toast("Added to This Week's Menu");
+        toast("Added to Menu");
       });
     });
 
     document.querySelectorAll(".plan-schedule-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         openScheduleSlotModal({
-          defaultDay: "Mon",
+          defaultDay: selectedDay || "Mon",
           defaultSlot: "Dinner",
           defaultPlanItemId: Number(btn.dataset.planId),
         });
@@ -642,11 +743,11 @@ export async function renderPlannerView(container, state, navigate) {
     });
 
     document.getElementById("clear-calendar-btn")?.addEventListener("click", async () => {
-      if (!confirm("Clear all scheduled slots on the Weekly Meal Calendar?")) return;
+      if (!confirm("Clear all scheduled slots on the Meal Calendar?")) return;
       await api("/api/planner/calendar", { method: "DELETE" });
       await refreshPlannerState();
       render();
-      toast("Cleared calendar slots");
+      toast("Cleared calendar");
     });
 
     document.querySelectorAll(".plan-scale-select").forEach((sel) => {
@@ -655,14 +756,6 @@ export async function renderPlannerView(container, state, navigate) {
           method: "PATCH",
           body: { scale: Number(sel.value) },
         });
-        await refreshPlannerState();
-        render();
-      });
-    });
-
-    document.querySelectorAll(".plan-remove-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        await api(`/api/planner/${btn.dataset.id}`, { method: "DELETE" });
         await refreshPlannerState();
         render();
       });
@@ -679,108 +772,193 @@ export async function renderPlannerView(container, state, navigate) {
   }
 
   async function openPreviewModal() {
-    let preview = await api("/api/planner/preview-list", { method: "POST" });
-    templateItems = await api("/api/lists/template/items");
-    const activeTpl = templateItems.filter((t) => t.is_active);
-    let editingStdIdx = null;
+    let [preview, freshStapleLists, freshTemplateItems] = await Promise.all([
+      api("/api/planner/preview-list", { method: "POST" }),
+      api("/api/lists/staple-lists").catch(() => stapleLists),
+      api("/api/lists/template/items").catch(() => templateItems),
+    ]);
+    stapleLists = freshStapleLists || [];
+    templateItems = freshTemplateItems || [];
 
-    if (!preview.length && !activeTpl.length) {
-      toast("Select at least one recipe or configure Weekly Template staples first.", true);
+    if (!preview.length && !templateItems.length) {
+      toast("Select at least one recipe or configure a Staple List first.", true);
       return;
     }
 
+    let selectedListId = (lists.find((l) => l.list_type === "weekly") || lists[0])?.id || "";
+
+    const pickDefaultStapleList = (listId) => {
+      const targetList = lists.find((l) => l.id === Number(listId));
+      if (!targetList || !stapleLists.length) return "";
+      const lname = (targetList.name || "").toLowerCase();
+      const byName = stapleLists.find((sl) => lname.includes(sl.name.toLowerCase()) || sl.name.toLowerCase().includes(lname.split(" ")[0]));
+      if (byName) return String(byName.id);
+      if (targetList.list_type === "weekly") return String(stapleLists[0].id);
+      return "";
+    };
+
+    let selectedStapleListVal = pickDefaultStapleList(selectedListId);
+    let editingStdIdx = null;
+    const stapleEdits = new Map(); // tplId -> { checked, buy_qty, buy_unit, notes }
+
+    const captureStapleEdits = () => {
+      document.querySelectorAll(".tpl-prev-check").forEach((chk) => {
+        const id = Number(chk.dataset.tplId);
+        const qtyEl = document.querySelector(`.tpl-prev-qty[data-tpl-id="${id}"]`);
+        const unitEl = document.querySelector(`.tpl-prev-unit[data-tpl-id="${id}"]`);
+        const notesEl = document.querySelector(`.tpl-prev-notes[data-tpl-id="${id}"]`);
+        stapleEdits.set(id, {
+          checked: chk.checked,
+          buy_qty: Number(qtyEl?.value) || 1,
+          buy_unit: unitEl?.value.trim() ?? "",
+          notes: notesEl?.value.trim() ?? "",
+        });
+      });
+    };
+
+    const getVisibleStaples = () => {
+      if (!selectedStapleListVal) return [];
+      if (selectedStapleListVal === "ALL") return templateItems;
+      const slId = Number(selectedStapleListVal);
+      return templateItems.filter((t) => t.staple_list_id === slId);
+    };
+
     const buildBodyHtml = () => {
       const regular = preview.filter((x) => !x.is_pantry_staple);
-      const staples = preview.filter((x) => x.is_pantry_staple);
+      const pantryStaples = preview.filter((x) => x.is_pantry_staple);
+      const visibleStaples = getVisibleStaples();
 
-      const renderRow = (item, idx) => `
-        <div style="padding: 8px 0; border-bottom: 1px solid var(--surface-alt);">
-          <div class="row" style="align-items: flex-start;">
-            <input type="checkbox" class="prev-check" data-idx="${idx}" ${item.include_by_default ? "checked" : ""} style="margin-top: 6px; width: 18px; height: 18px;" />
-            <div class="grow">
-              <div class="row-wrap" style="gap: 6px;">
-                <span class="qty-badge ${Number(item.buy_qty) > 1 ? "multi" : ""}">${fmtQty(item.buy_qty)}×</span>
-                <span style="font-weight: 700;">${esc(item.name)}</span>
-                ${item.buy_unit ? `<span class="unit-pill">${esc(item.buy_unit)}</span>` : ""}
-                <span class="badge">${esc(item.default_department)}</span>
+      const renderRecipeIngRow = (item, idx) => {
+        const { badgeHtml, unitPillHtml } = renderQtyOrWeightBadge(item.buy_qty, item.buy_unit);
+        return `
+          <div style="padding: 8px 0; border-bottom: 1px solid var(--surface-alt);">
+            <div class="row" style="align-items: flex-start;">
+              <input type="checkbox" class="prev-check" data-idx="${idx}" ${item.include_by_default ? "checked" : ""} style="margin-top: 6px; width: 18px; height: 18px;" />
+              <div class="grow">
+                <div class="row-wrap" style="gap: 6px;">
+                  ${badgeHtml}
+                  <span style="font-weight: 700;">${esc(item.name)}</span>
+                  ${unitPillHtml}
+                  <span class="badge">${esc(item.default_department)}</span>
+                </div>
+                <div class="small muted">
+                  ${esc(item.needed_summary || `Std: ${item.package_label}`)}
+                  <button type="button" class="btn-link-inline edit-std-btn" data-idx="${idx}" title="Change store's standard package size">
+                    ✎ Edit Std
+                  </button>
+                </div>
+                <div class="small muted">For: ${esc(item.source_recipes.join(", "))}</div>
               </div>
-              <div class="small muted">
-                ${esc(item.needed_summary || `Std: ${item.package_label}`)}
-                <button type="button" class="btn-link-inline edit-std-btn" data-idx="${idx}" title="Change store's standard package size for ${esc(item.name)}">
-                  ✎ Edit Std
-                </button>
+              <div class="row" style="gap: 4px; width: 150px; flex-shrink: 0;">
+                <input class="input prev-qty" data-idx="${idx}" type="number" step="any" min="0.01" value="${esc(item.buy_qty)}" style="width: 64px; min-height: 34px; padding: 4px 6px;" />
+                <input class="input prev-unit" data-idx="${idx}" value="${esc(item.buy_unit)}" style="min-height: 34px; padding: 4px 6px; font-size: 0.8rem;" />
               </div>
-              <div class="small muted">For: ${esc(item.source_recipes.join(", "))}</div>
             </div>
-            <div class="row" style="gap: 4px; width: 155px; flex-shrink: 0;">
-              <input class="input prev-qty" data-idx="${idx}" type="number" step="0.25" min="0.25" value="${esc(item.buy_qty)}" style="width: 66px; min-height: 34px; padding: 4px 6px;" />
-              <input class="input prev-unit" data-idx="${idx}" value="${esc(item.buy_unit)}" style="min-height: 34px; padding: 4px 6px; font-size: 0.8rem;" />
-            </div>
+
+            ${editingStdIdx === idx ? `
+              <div class="card stack-sm" style="margin-top: 8px; padding: 10px; background: var(--accent-soft); border-color: #fcd34d;">
+                <div class="small" style="font-weight: 700; color: #92400e;">
+                  Update Standard (Std) Package Size for "${esc(item.name)}"
+                </div>
+                <div class="row-wrap">
+                  <input class="input" id="std-size-input" type="number" step="0.01" min="0.01" value="${esc(item.package_size)}" style="width: 82px; min-height: 32px;" />
+                  <select class="select" id="std-unit-input" style="width: 92px; min-height: 32px;">
+                    ${["oz", "fl_oz", "lb", "count", "clove", "bunch", "head", "g", "ml", "cup", "tbsp"].map((u) => `
+                      <option value="${u}" ${u === item.package_unit ? "selected" : ""}>${u}</option>
+                    `).join("")}
+                  </select>
+                  <input class="input grow" id="std-label-input" value="${esc(item.package_label)}" placeholder="e.g. 28 oz can or lb" style="min-height: 32px;" />
+                  <button type="button" class="btn btn-primary btn-sm" id="save-std-btn" data-idx="${idx}">Save &amp; Recalc</button>
+                </div>
+              </div>
+            ` : ""}
           </div>
-
-          ${editingStdIdx === idx ? `
-            <div class="card stack-sm" style="margin-top: 8px; padding: 10px; background: var(--accent-soft); border-color: #fcd34d;">
-              <div class="small" style="font-weight: 700; color: #92400e;">
-                Update Standard (Std) Store Package Size for "${esc(item.name)}"
-              </div>
-              <div class="row-wrap">
-                <input class="input" id="std-size-input" type="number" step="0.01" min="0.01" value="${esc(item.package_size)}" style="width: 85px; min-height: 32px;" title="Numeric package size" />
-                <select class="select" id="std-unit-input" style="width: 95px; min-height: 32px;">
-                  ${["oz", "fl_oz", "lb", "count", "clove", "bunch", "head", "g", "ml", "cup", "tbsp"].map((u) => `
-                    <option value="${u}" ${u === item.package_unit ? "selected" : ""}>${u}</option>
-                  `).join("")}
-                </select>
-                <input class="input grow" id="std-label-input" value="${esc(item.package_label)}" placeholder="e.g. 28 oz can" style="min-height: 32px;" />
-                <button type="button" class="btn btn-primary btn-sm" id="save-std-btn" data-idx="${idx}">Save &amp; Recalculate</button>
-              </div>
-            </div>
-          ` : ""}
-        </div>
-      `;
+        `;
+      };
 
       return `
         <div class="stack-md">
-          <div>
-            <label class="field-label">Destination Shopping List</label>
-            <select class="select" id="target-list-select">
-              ${lists.map((l) => `
-                <option value="${l.id}" ${l.list_type === "weekly" ? "selected" : ""}>
-                  ${esc(l.name)}${l.store_name ? ` (${esc(l.store_name)})` : ""}
-                </option>
-              `).join("")}
-            </select>
+          <div class="grid-2">
+            <div>
+              <label class="field-label">Destination Shopping List</label>
+              <select class="select" id="target-list-select">
+                ${lists.map((l) => `
+                  <option value="${l.id}" ${Number(selectedListId) === l.id ? "selected" : ""}>
+                    ${esc(l.name)}${l.store_name ? ` (${esc(l.store_name)})` : ""}
+                  </option>
+                `).join("")}
+              </select>
+            </div>
+            <div>
+              <label class="field-label">Add Staples</label>
+              <select class="select" id="preview-staple-list-select">
+                <option value="" ${selectedStapleListVal === "" ? "selected" : ""}>None (recipes only)</option>
+                ${stapleLists.map((sl) => `
+                  <option value="${sl.id}" ${selectedStapleListVal === String(sl.id) ? "selected" : ""}>
+                    ${esc(sl.name)} (${sl.item_count} items)
+                  </option>
+                `).join("")}
+                ${stapleLists.length > 1 ? `
+                  <option value="ALL" ${selectedStapleListVal === "ALL" ? "selected" : ""}>All Staple Lists</option>
+                ` : ""}
+              </select>
+            </div>
           </div>
 
-          ${activeTpl.length ? `
+          ${visibleStaples.length ? `
             <div class="card stack-sm" style="padding: 12px; background: var(--bg);">
-              <label class="row" style="font-weight: 700; cursor: pointer;">
-                <input type="checkbox" id="include-weekly-tpl-chk" checked style="width: 18px; height: 18px;" />
-                <span>Include Weekly Template Staples (${activeTpl.length})</span>
-              </label>
-              <div class="small muted">
-                ${activeTpl.map((t) => `${fmtQty(t.buy_qty)}× ${esc(t.name)}${t.buy_unit ? ` (${esc(t.buy_unit)})` : ""}`).join(" · ")}
+              <div class="row-wrap" style="justify-content: space-between;">
+                <strong class="small">Editable Staples (${visibleStaples.length})</strong>
+                <span class="small muted">Edit quantities/notes for this trip below</span>
+              </div>
+              <div class="stack-sm">
+                ${visibleStaples.map((t) => {
+                  const ed = stapleEdits.get(t.id);
+                  const chk = ed ? ed.checked : t.is_active;
+                  const qty = ed ? ed.buy_qty : t.buy_qty;
+                  const unit = ed ? ed.buy_unit : (t.buy_unit || "");
+                  const notes = ed ? ed.notes : (t.notes || "");
+                  const { badgeHtml } = renderQtyOrWeightBadge(qty, unit);
+                  return `
+                    <div class="staple-preview-row">
+                      <label class="row" style="cursor: pointer;">
+                        <input type="checkbox" class="tpl-prev-check" data-tpl-id="${t.id}" ${chk ? "checked" : ""} style="width: 18px; height: 18px;" />
+                        <span class="row-wrap grow" style="gap: 6px;">
+                          ${badgeHtml}
+                          <strong>${esc(t.name)}</strong>
+                          <span class="badge">${esc(t.department)}</span>
+                        </span>
+                      </label>
+                      <div class="staple-edit-controls">
+                        <input class="input tpl-prev-qty" data-tpl-id="${t.id}" type="number" step="any" min="0.01" value="${esc(qty)}" style="width: 64px; min-height: 30px; padding: 3px 6px; font-size: 0.82rem;" title="Qty or weight" />
+                        <input class="input tpl-prev-unit" data-tpl-id="${t.id}" value="${esc(unit)}" placeholder="Unit" style="width: 110px; min-height: 30px; padding: 3px 6px; font-size: 0.82rem;" />
+                        <input class="input grow tpl-prev-notes" data-tpl-id="${t.id}" value="${esc(notes)}" placeholder="Optional note..." style="min-width: 130px; min-height: 30px; padding: 3px 6px; font-size: 0.82rem;" />
+                      </div>
+                    </div>
+                  `;
+                }).join("")}
               </div>
             </div>
           ` : ""}
 
           ${regular.length ? `
             <div>
-              <h4 style="margin: 0 0 6px;">Recipe Ingredients to Buy (${regular.length})</h4>
-              <div>${regular.map((item) => renderRow(item, preview.indexOf(item))).join("")}</div>
+              <h4 style="margin: 0 0 6px;">Recipe Ingredients (${regular.length})</h4>
+              <div>${regular.map((item) => renderRecipeIngRow(item, preview.indexOf(item))).join("")}</div>
             </div>
           ` : ""}
 
-          ${staples.length ? `
+          ${pantryStaples.length ? `
             <div>
-              <h4 style="margin: 8px 0 4px; color: var(--text-muted);">In Pantry / Staples Check (${staples.length})</h4>
-              <p class="small muted" style="margin: 0 0 6px;">Unchecked because they are marked In Stock in your Pantry — check any item if you need more.</p>
-              <div>${staples.map((item) => renderRow(item, preview.indexOf(item))).join("")}</div>
+              <h4 style="margin: 8px 0 4px; color: var(--text-muted);">In Pantry Check (${pantryStaples.length})</h4>
+              <p class="small muted" style="margin: 0 0 6px;">Unchecked because they're In Stock in Pantry — check if needed.</p>
+              <div>${pantryStaples.map((item) => renderRecipeIngRow(item, preview.indexOf(item))).join("")}</div>
             </div>
           ` : ""}
 
           <label class="row small">
             <input type="checkbox" id="clear-plan-after" />
-            <span>Clear "This Week's Menu" after adding to shopping list</span>
+            <span>Clear "This Week's Menu" after adding</span>
           </label>
 
           <button class="btn btn-primary" id="confirm-apply-btn">Add Checked Items to List</button>
@@ -788,10 +966,26 @@ export async function renderPlannerView(container, state, navigate) {
       `;
     };
 
-    openModal("Generate Shopping List (US Package Sizes)", buildBodyHtml(), (close) => {
+    openModal("Build Shopping List", buildBodyHtml(), (close) => {
       const bindModalEvents = () => {
+        document.getElementById("target-list-select")?.addEventListener("change", (e) => {
+          captureStapleEdits();
+          selectedListId = e.target.value;
+          selectedStapleListVal = pickDefaultStapleList(selectedListId);
+          document.getElementById("modal-body").innerHTML = buildBodyHtml();
+          bindModalEvents();
+        });
+
+        document.getElementById("preview-staple-list-select")?.addEventListener("change", (e) => {
+          captureStapleEdits();
+          selectedStapleListVal = e.target.value;
+          document.getElementById("modal-body").innerHTML = buildBodyHtml();
+          bindModalEvents();
+        });
+
         document.querySelectorAll(".edit-std-btn").forEach((btn) => {
           btn.addEventListener("click", () => {
+            captureStapleEdits();
             const idx = Number(btn.dataset.idx);
             editingStdIdx = editingStdIdx === idx ? null : idx;
             document.getElementById("modal-body").innerHTML = buildBodyHtml();
@@ -800,6 +994,7 @@ export async function renderPlannerView(container, state, navigate) {
         });
 
         document.getElementById("save-std-btn")?.addEventListener("click", async (e) => {
+          captureStapleEdits();
           const idx = Number(e.currentTarget.dataset.idx);
           const item = preview[idx];
           const pkgSize = Number(document.getElementById("std-size-input").value) || 1;
@@ -821,21 +1016,21 @@ export async function renderPlannerView(container, state, navigate) {
           preview = await api("/api/planner/preview-list", { method: "POST" });
           document.getElementById("modal-body").innerHTML = buildBodyHtml();
           bindModalEvents();
-          toast(`Updated standard size for ${item.name} to "${pkgLabel}"`);
+          toast(`Updated standard size for ${item.name}`);
         });
 
         document.getElementById("confirm-apply-btn")?.addEventListener("click", async () => {
+          captureStapleEdits();
           const listId = Number(document.getElementById("target-list-select").value);
           const clearAfter = document.getElementById("clear-plan-after").checked;
-          const includeTpl = document.getElementById("include-weekly-tpl-chk")?.checked;
-          const selected = [];
 
+          const selectedRecipes = [];
           preview.forEach((item, idx) => {
             const chk = document.querySelector(`.prev-check[data-idx="${idx}"]`);
             if (!chk?.checked) return;
             const qtyEl = document.querySelector(`.prev-qty[data-idx="${idx}"]`);
             const unitEl = document.querySelector(`.prev-unit[data-idx="${idx}"]`);
-            selected.push({
+            selectedRecipes.push({
               item_key: item.item_key,
               name: item.name,
               buy_qty: Number(qtyEl.value) || 1,
@@ -846,23 +1041,42 @@ export async function renderPlannerView(container, state, navigate) {
             });
           });
 
-          if (!selected.length && !includeTpl) {
-            toast("Select at least one item to add.", true);
+          const selectedStapleIds = [];
+          const stapleOverrides = [];
+          for (const t of getVisibleStaples()) {
+            const ed = stapleEdits.get(t.id);
+            const checked = ed ? ed.checked : t.is_active;
+            if (!checked) continue;
+            selectedStapleIds.push(t.id);
+            if (ed) {
+              stapleOverrides.push({
+                id: t.id,
+                buy_qty: ed.buy_qty,
+                buy_unit: ed.buy_unit,
+                notes: ed.notes,
+              });
+            }
+          }
+
+          if (!selectedRecipes.length && !selectedStapleIds.length) {
+            toast("Select at least one staple or recipe item to add.", true);
             return;
           }
 
-          if (includeTpl && activeTpl.length) {
+          if (selectedStapleIds.length) {
             await api(`/api/lists/${listId}/apply-template`, {
               method: "POST",
-              body: { item_ids: activeTpl.map((t) => t.id) },
+              body: { item_ids: selectedStapleIds, overrides: stapleOverrides },
             });
           }
 
-          if (selected.length) {
+          if (selectedRecipes.length) {
             await api("/api/planner/apply-to-list", {
               method: "POST",
-              body: { list_id: listId, items: selected, clear_plan_after: clearAfter },
+              body: { list_id: listId, items: selectedRecipes, clear_plan_after: clearAfter },
             });
+          } else if (clearAfter) {
+            await api("/api/planner", { method: "DELETE" });
           }
 
           state.activeListId = listId;

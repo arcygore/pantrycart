@@ -22,7 +22,7 @@ from app.routers import (
     stores_router,
 )
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 
 def _compute_build_id() -> str:
@@ -120,6 +120,8 @@ def spa_fallback(full_path: str):
         raise HTTPException(status_code=404, detail="API endpoint not found")
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     html = html.replace("/static/css/styles.css", f"/static/css/styles.css?v={APP_BUILD_ID}")
+    html = html.replace("/static/css/planner.css", f"/static/css/planner.css?v={APP_BUILD_ID}")
+    html = html.replace("/static/css/recipes.css", f"/static/css/recipes.css?v={APP_BUILD_ID}")
     html = html.replace("/static/js/app.js", f"/static/js/app.js?v={APP_BUILD_ID}")
     html = html.replace("</head>", f'  <script>window.__PANTRYCART_BUILD__ = "{APP_BUILD_ID}";</script>\n</head>')
     return HTMLResponse(content=html)

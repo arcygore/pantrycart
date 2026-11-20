@@ -61,10 +61,10 @@ export async function renderSettingsView(container, state, onLogout) {
       </div>
 
       <div class="subtabs">
-        <button class="subtab ${tab === "household" ? "active" : ""}" data-tab="household">Household Accounts</button>
-        <button class="subtab ${tab === "catalog" ? "active" : ""}" data-tab="catalog">US Store Package Sizes</button>
-        <button class="subtab ${tab === "kroger" ? "active" : ""}" data-tab="kroger">Kroger API &amp; Shortcuts</button>
-        <button class="subtab ${tab === "ha" ? "active" : ""}" data-tab="ha">Home Assistant &amp; API</button>
+        <button class="subtab ${tab === "household" ? "active" : ""}" data-tab="household">Household</button>
+        <button class="subtab ${tab === "catalog" ? "active" : ""}" data-tab="catalog">Packages</button>
+        <button class="subtab ${tab === "kroger" ? "active" : ""}" data-tab="kroger">Kroger</button>
+        <button class="subtab ${tab === "ha" ? "active" : ""}" data-tab="ha">Home Asst</button>
       </div>
 
       ${tab === "household" ? renderHouseholdTab()
@@ -668,6 +668,13 @@ sensor:
             linked_store_id: targetSid,
           },
         });
+        let syncMsg = "";
+        if (targetSid) {
+          const syncRes = await api(`/api/kroger/sync-store/${targetSid}`, { method: "POST" }).catch(() => null);
+          if (syncRes && syncRes.synced_count > 0) {
+            syncMsg = ` · synced ${syncRes.synced_count} aisles`;
+          }
+        }
         const [newStatus, updatedStores] = await Promise.all([
           api("/api/kroger/status"),
           api("/api/stores"),
@@ -677,7 +684,7 @@ sensor:
           stores.splice(0, stores.length, ...updatedStores);
         }
         krogerSearchResults = [];
-        toast(`Selected ${btn.dataset.locName}!`);
+        toast(`Selected ${btn.dataset.locName}${syncMsg}!`);
         render();
       });
     });

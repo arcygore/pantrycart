@@ -162,6 +162,24 @@ a {
   color: var(--text-muted);
 }
 
+.mobile-settings-btn {
+  min-height: 30px;
+  width: 34px;
+  padding: 0;
+  color: var(--text-muted);
+}
+
+.mobile-settings-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.mobile-settings-btn.active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
 .bottom-nav {
   position: fixed;
   bottom: 0;
@@ -173,7 +191,7 @@ a {
   backdrop-filter: blur(10px);
   border-top: 1px solid var(--border);
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   z-index: 40;
 }
 
@@ -1523,5 +1541,318 @@ html[data-theme="dark"] .btn-log-done,
 html[data-theme="dark"] .step-wizard-banner.ready {
   border-color: rgba(82, 183, 136, 0.45);
 }
+
+/* ============================================================================
+   v1.5 Enhancements: Weight Badges, Overflow Menus, Smart Add, Kroger Cards,
+   Action Toasts, and Mobile Declutter (Issues #1–#7)
+   ============================================================================ */
+
+/* Sold-by-weight badge (#4): distinct sky-blue pill vs green/amber count badge */
+.weight-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  background: #0369a1;
+  padding: 2px 9px;
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgba(3, 105, 161, 0.22);
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+html[data-theme="dark"] .weight-badge {
+  background: #0284c7;
+  color: #ffffff;
+}
+
+/* Subtle inline price chip (#3) — lives in item-meta, never inside notes */
+.price-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  padding: 0 6px;
+  border-radius: 5px;
+}
+
+/* Overflow ("⋯") dropdown menu (#1, #2) */
+.overflow-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.overflow-toggle {
+  min-width: 34px;
+  padding-left: 9px;
+  padding-right: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.overflow-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  min-width: 210px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 55;
+}
+
+.overflow-menu[hidden] {
+  display: none;
+}
+
+.overflow-menu.align-left {
+  left: 0;
+  right: auto;
+}
+
+.overflow-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.overflow-item:hover {
+  background: var(--surface-alt);
+}
+
+.overflow-item.danger {
+  color: var(--danger);
+}
+
+.overflow-item.danger:hover {
+  background: var(--danger-soft);
+}
+
+/* Toast with inline Undo / action button (#6) */
+.toast-with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.toast-action-btn {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.toast-action-btn:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* Briefly highlight a newly added / updated item row (#6) */
+@keyframes justAddedFlash {
+  0% { background: var(--primary-soft); }
+  100% { background: transparent; }
+}
+
+.item-row.just-added {
+  animation: justAddedFlash 1.8s ease-out forwards;
+}
+
+/* Smart Add Details drawer & unit chips (#4, #6) */
+.quick-add-details {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.parsed-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.unit-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.unit-chip {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  min-height: 26px;
+}
+
+.unit-chip:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.unit-chip.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+
+.unit-chip.weight.active {
+  background: #0369a1;
+  border-color: #0369a1;
+}
+
+/* Visual Kroger Product Cards with thumbnails (#5) */
+.kroger-prod-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.kroger-prod-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.kroger-prod-card:hover {
+  border-color: var(--primary);
+}
+
+.kroger-prod-card.selected {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.kroger-prod-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: contain;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: 2px;
+}
+
+.kroger-prod-thumb-placeholder {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  flex-shrink: 0;
+}
+
+/* Mobile polish & declutter (#1, #2) */
+.desktop-only {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .desktop-only {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 639px) {
+  .main-content {
+    padding: 12px 10px calc(var(--nav-height) + 22px);
+  }
+
+  .mobile-header {
+    margin-bottom: 10px;
+  }
+
+  .page-header {
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .page-title {
+    font-size: 1.24rem;
+  }
+
+  .page-subtitle {
+    display: none;
+  }
+
+  .card {
+    padding: 12px;
+  }
+
+  .item-row {
+    padding: 9px 10px;
+    gap: 9px;
+  }
+
+  .quick-query-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+
+  .quick-query-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .quick-query-chip {
+    flex-shrink: 0;
+  }
+}
+
 
 

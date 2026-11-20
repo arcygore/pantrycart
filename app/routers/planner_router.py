@@ -46,7 +46,7 @@ class CalendarSlotCreatePayload(BaseModel):
     meal_slot: str = Field(default="Dinner", min_length=1, max_length=30)
     plan_item_id: Optional[int] = None
     custom_title: str = Field(default="", max_length=160)
-    servings_used: float = Field(default=1.0, gt=0, le=50)
+    servings_used: Optional[float] = Field(default=None, gt=0, le=50)
     person_name: str = Field(default="", max_length=60)
     notes: str = Field(default="", max_length=200)
     calories: Optional[float] = None
@@ -54,6 +54,23 @@ class CalendarSlotCreatePayload(BaseModel):
     carbs_g: Optional[float] = None
     fat_g: Optional[float] = None
     fiber_g: Optional[float] = None
+
+
+class HouseholdSizePayload(BaseModel):
+    size: int = Field(ge=1, le=20)
+
+
+def _get_household_size(conn) -> int:
+    row = conn.execute("SELECT value_json FROM app_settings WHERE key = 'household_size'").fetchone()
+    if row:
+        try:
+            val = int(json.loads(row["value_json"]))
+            if val >= 1:
+                return val
+        except Exception:
+            pass
+    cnt = conn.execute("SELECT COUNT(*) FROM users WHERE COALESCE(is_guest, 0) = 0").fetchone()[0]
+    return max(1, int(cnt or 1))
 
 
 class CalendarSlotUpdatePayload(BaseModel):
@@ -188,9 +205,26 @@ def clear_meal_plan(user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+@router.put("/household-size")
+def set_household_size(payload: HouseholdSizePayload, user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES ('household_size', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (json.dumps(payload.size), utc_now_iso()),
+        )
+    return {"household_size": payload.size}
+
+
 @router.get("/calendar")
 def get_calendar_data(user: dict = Depends(get_current_user)):
     with get_db() as conn:
+        household_size = _get_household_size(conn)
         slot_rows = conn.execute(
             """
             SELECT cs.id, cs.day_name, cs.meal_slot, cs.plan_item_id, cs.custom_title,
@@ -232,6 +266,9 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
             custom_people.add(s["person_name"].strip())
 
         srv_used = float(s["servings_used"] or 1.0)
+        is_everyone = (s["person_name"] or "").strip() in ("", "Everyone")
+        per_person_srv = (srv_used / household_size) if (is_everyone and household_size > 1) else srv_used
+
         if s["slot_cal"] is not None:
             cal = round(float(s["slot_cal"]))
             pro = round(float(s["slot_pro"] or 0.0))
@@ -240,13 +277,13 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
             fib = round(float(s["slot_fib"] or 0.0))
         elif s["recipe_id"] and s["calories_per_serving"] is not None:
             pf = _portion_scale_factor(s["recipe_servings"], s["recipe_custom_portions"])
-            cal = round(float(s["calories_per_serving"]) * pf * srv_used)
-            pro = round(float(s["protein_g"] or 0.0) * pf * srv_used)
-            carb = round(float(s["carbs_g"] or 0.0) * pf * srv_used)
-            fat = round(float(s["fat_g"] or 0.0) * pf * srv_used)
-            fib = round(float(s["fiber_g"] or 0.0) * pf * srv_used)
+            cal = round(float(s["calories_per_serving"]) * pf * per_person_srv)
+            pro = round(float(s["protein_g"] or 0.0) * pf * per_person_srv)
+            carb = round(float(s["carbs_g"] or 0.0) * pf * per_person_srv)
+            fat = round(float(s["fat_g"] or 0.0) * pf * per_person_srv)
+            fib = round(float(s["fiber_g"] or 0.0) * pf * per_person_srv)
         else:
-            est = estimate_single_food_macros(display_title, srv_used)
+            est = estimate_single_food_macros(display_title, per_person_srv)
             cal = est["calories"]
             pro = est["protein_g"]
             carb = est["carbs_g"]
@@ -263,6 +300,8 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
                 "title": display_title,
                 "custom_title": s["custom_title"] or "",
                 "servings_used": round(srv_used, 2),
+                "per_person_servings": round(per_person_srv, 2),
+                "is_everyone": is_everyone,
                 "person_name": s["person_name"] or "",
                 "notes": s["notes"] or "",
                 "calories": cal,
@@ -298,6 +337,7 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
 
     return {
         "slots": slots,
+        "household_size": household_size,
         "household_members": members,
         "list_and_snack_items": quick_items,
     }
@@ -307,6 +347,14 @@ def get_calendar_data(user: dict = Depends(get_current_user)):
 def create_calendar_slot(payload: CalendarSlotCreatePayload, user: dict = Depends(get_current_user)):
     now = utc_now_iso()
     with get_db() as conn:
+        household_size = _get_household_size(conn)
+        person_clean = payload.person_name.strip()
+        is_everyone = person_clean in ("", "Everyone")
+        eff_servings = (
+            float(payload.servings_used)
+            if payload.servings_used is not None
+            else (float(household_size) if is_everyone else 1.0)
+        )
         title = payload.custom_title.strip()
         plan_item_id = payload.plan_item_id
         if plan_item_id is not None:
@@ -338,8 +386,8 @@ def create_calendar_slot(payload: CalendarSlotCreatePayload, user: dict = Depend
                 payload.meal_slot.strip(),
                 plan_item_id,
                 title,
-                payload.servings_used,
-                payload.person_name.strip(),
+                eff_servings,
+                person_clean,
                 payload.notes.strip(),
                 payload.calories,
                 payload.protein_g,
@@ -350,7 +398,7 @@ def create_calendar_slot(payload: CalendarSlotCreatePayload, user: dict = Depend
             ),
         )
         slot_id = cur.lastrowid
-    return {"id": slot_id}
+    return {"id": slot_id, "servings_used": eff_servings}
 
 
 @router.patch("/calendar/{slot_id}")

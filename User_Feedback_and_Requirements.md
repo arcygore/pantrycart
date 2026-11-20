@@ -23,6 +23,48 @@
 ## 👀 READY FOR REVIEW (Awaiting Your Official Approval)
 *(Check `[x]` once you verify and approve, or add a comment below any item if you want changes)*
 
+- [ ] **GH-01 & GH-02 (DO): Declutter UI across desktop & mobile, add sub-pages and overflow menus, and make web/mobile experience cleaner**
+  - **Agent Resolution Note:**
+    - **Navigation & Mobile Polish (`app/static/js/app.js`, `app/static/css/styles.css`)**: Streamlined mobile bottom nav to the 5 core tabs (`Lists`, `Plan`, `Recipes`, `Pantry`, `Stores`) with a header Settings icon button, hid verbose subtitles on small screens, tightened card/row spacing, and made recipe filter chips horizontally scrollable on mobile.
+    - **Sub-Pages & Overflow (`⋯`) Menus (`app/static/js/utils.js`, `lists.js`, `planner.js`, `recipes.js`, `stores.js`, `pantry.js`, `settings.js`)**: Tucked secondary actions into clean `⋯` dropdown menus across views, split **This Week** into `Meal Plan` & `Pick Recipes` sub-tabs, split **Stores** into `Walking Path`, `Aisle Map`, and `Store Settings` sub-tabs, moved Recipes URL/paste/manual/bulk import behind a single `+ Add` modal, and added 1-click **Clear Entire List** (with confirmation prompt) inside the list `⋯` menu.
+
+- [ ] **GH-03 (DO): Notes should only contain user-entered info (never auto-filled prices or generic labels)**
+  - **Agent Resolution Note:**
+    - Added a dedicated `price` column to `shopping_list_items` (`app/database.py`), migrated legacy `$X.XX @ Kroger` notes into `price`, and cleared auto-seeded `'Weekly staple'` and `'Restock pantry'` notes.
+    - Updated `app/routers/kroger_router.py`, `app/routers/ha_router.py`, `app/routers/lists_router.py`, and `app/static/js/views/pantry.js` so Kroger prices display cleanly in a subtle `.price-chip` inside item metadata while `notes` remain empty unless typed by a user.
+
+- [ ] **GH-04 (DO): Display sold-by-weight items in units (e.g. `1.5 lb`) in a distinct color instead of `QTY (×)`**
+  - **Agent Resolution Note:**
+    - Added weight unit helpers in `app/units.py` (`is_weight_unit`) and `app/static/js/utils.js` (`isWeightUnit`, `renderQtyOrWeightBadge`) plus sky-blue `.weight-badge` styling in `app/static/css/styles.css`.
+    - Updated `compute_grocery_packages()`, `add_item_to_list_internal()`, `lists.js`, and `planner.js` so bulk weight items keep fractional weights (e.g. `1.5 lb`) instead of rounding up to package counts, with 1-tap weight unit chips (`lb`, `oz`) in Quick Add and Edit modals.
+
+- [ ] **GH-05 & GH-07 & Inbox (DO): Smarter Kroger product matching with product images & per-user preferences, plus automatic aisle sync/clear on store changes**
+  - **Agent Resolution Note:**
+    - **Smart Matching & Per-User Preferences (`app/routers/kroger_router.py`, `app/database.py`, `lists.js`)**: Added `kroger_product_prefs` keyed by `(user_id, item_key)` (`/api/kroger/prefs`), scored Kroger product candidates using query overlap + department-to-category alignment, extracted front product thumbnails, added a visual **🔍 Pick Exact Product & Brand** modal from Edit Item, and surfaced product thumbnails & remembered `★ Saved` matches in **Send to Kroger Cart**.
+    - **Strict Store Resolution & Auto-Sync/Clear (`lists_router.py`, `stores_router.py`, `stores.js`, `settings.js`)**: Switching a list's store (`PATCH /api/lists/{list_id}`) automatically clears previous aisles/prices and either syncs aisles for a Kroger-linked store or keeps aisles empty for non-Kroger stores. Linking a Kroger store in **Stores** or **Settings** automatically syncs the Aisle Map (`POST /api/kroger/sync-store/{store_id}`) while preserving manual overrides (`source = 'manual'`), plus a **🔄 Sync Kroger Aisles** button in **Stores → Aisle Map**.
+
+- [ ] **GH-06 (DO): Rearchitect the "Add Item" bar for reliability, smart parsing, and quick unit/dept selection**
+  - **Agent Resolution Note:**
+    - Fixed `parse_leading_quantity()` (`app/units.py`) so percentages (`2% milk`) and lean ratios (`80/20 ground beef`) are never eaten as quantities, while supporting multiplier syntax (`2x bananas`, `bananas x3`).
+    - Upgraded `/api/lists/suggestions` to strip leading quantities/units and search store locations, staples, catalog, and recent items.
+    - Rebuilt Quick Add in `lists.js` with live parsed preview, an expandable `⚙` Details drawer (Qty, Weight/Unit chips, Department, Notes), suggestion quantity preservation, brief row highlight, and an **Undo** action toast.
+
+- [ ] **GH-08 (DO): Compact Meal Calendar integration & fix "Everyone" deduction (`QTY_EVERYONE×`)**
+  - **Agent Resolution Note:**
+    - Added `household_size` persistence (`PUT /api/planner/household-size`) with an inline **`Everyone = [−] N [+]`** stepper on the calendar (`planner.js`).
+    - Scheduling a meal for **Everyone** now deducts `household_size` servings from the recipe's remaining servings pool while dividing daily calorie/macro totals cleanly per person (`per_person_servings`).
+    - Redesigned the Meal Calendar (`app/static/css/planner.css`, `planner.js`) with a mobile 7-day pill strip + 1-day/full-week toggle and compact populated-only day cards.
+
+- [ ] **GH-09 (DO): Rename "Weekly Template" to "Add Staples", support multiple staple lists, and make staples editable before adding**
+  - **Agent Resolution Note:**
+    - Added `staple_lists` (`GET/POST/PATCH/DELETE /api/lists/staple-lists`) and `staple_list_id` + per-trip `overrides` on `/apply-template` (`app/database.py`, `app/routers/lists_router.py`).
+    - Renamed UI to **Add Staples** / **Manage Staple Lists** (`lists.js`) and added a **Staple List selector** + inline editable **Qty / Unit / Notes** per item right inside **This Week → Build List** (`planner.js`).
+
+- [ ] **GH-10 (DO): Let users configure the Recipes page, pin favorites to the top, and move recipes around**
+  - **Agent Resolution Note:**
+    - Added per-user `user_recipe_prefs` (`POST /api/recipes/{id}/pin`, `POST /api/recipes/reorder`) and `GET/PUT /api/recipes/view-prefs` (`app/routers/recipes_router.py`, `app/database.py`).
+    - Updated `app/static/js/views/recipes.js` and `app/static/css/recipes.css` with **📌 Pin to Top** buttons on every card/row, an **↕ Arrange** mode supporting desktop drag-and-drop plus mobile-friendly `⬆ Top / ↑ / ↓` controls, and **⚙ Customize View** (sort mode, Cards vs. Compact List layout, toggle photos/macros/descriptions).
+
 - [ ] **FB-08 (DO): Make quantity much more visible (separate bold pill from the green unit/package pill)**
   - **Agent Resolution Note:**
     - Replaced the combined `.item-qty` tag with two distinct pills in `app/static/css/styles.css`, `app/static/js/views/lists.js`, and `app/static/js/views/planner.js`:

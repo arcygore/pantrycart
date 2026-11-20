@@ -1,12 +1,51 @@
 import { api, apiUpload } from "../api.js";
 import { openLoseItQuickCardModal, renderMacroStrip } from "../nutrition_ui.js";
-import { esc, fmtQty, openModal, toast } from "../utils.js";
+import {
+  bindOverflowMenus,
+  esc,
+  fmtQty,
+  openModal,
+  overflowMenu,
+  toast,
+} from "../utils.js";
+
+const VIEW_PREFS_KEY = "pantrycart_recipe_view_prefs";
+const DEFAULT_VIEW_PREFS = {
+  sort_mode: "custom",
+  card_density: "cards",
+  show_photos: true,
+  show_macros: true,
+  show_description: true,
+};
+
+function loadCachedViewPrefs() {
+  try {
+    const raw = localStorage.getItem(VIEW_PREFS_KEY);
+    if (raw) return { ...DEFAULT_VIEW_PREFS, ...JSON.parse(raw) };
+  } catch {
+    // Ignore storage errors
+  }
+  return { ...DEFAULT_VIEW_PREFS };
+}
+
+function saveCachedViewPrefs(prefs) {
+  try {
+    localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // Ignore storage errors
+  }
+}
 
 export async function renderRecipesView(container, state) {
-  let [recipes, qData] = await Promise.all([
+  let [recipes, qData, remotePrefs] = await Promise.all([
     api("/api/recipes"),
     api("/api/recipes/quick-queries").catch(() => ({ queries: [] })),
+    api("/api/recipes/view-prefs").catch(() => null),
   ]);
+
+  let viewPrefs = remotePrefs ? { ...DEFAULT_VIEW_PREFS, ...remotePrefs } : loadCachedViewPrefs();
+  saveCachedViewPrefs(viewPrefs);
+
   let quickQueries = Array.isArray(qData?.queries) && qData.queries.length
     ? qData.queries
     : ["Dinner", "Lunch", "Breakfast", "Dessert", "Quick", "High Protein", "Chicken", "Beef", "Vegetarian"];
@@ -15,6 +54,7 @@ export async function renderRecipesView(container, state) {
   let cookScale = 1;
   let doneSteps = new Set();
   let showDiff = true;
+  let arrangeMode = false;
   const isGuest = Boolean(state.user?.is_guest);
 
   // FB-21 / FB-22: Automatically backfill missing images & nutrition for URL-imported recipes
@@ -32,13 +72,71 @@ export async function renderRecipesView(container, state) {
     }).catch(() => {});
   }
 
+  function getOrderedRecipes(list) {
+    const mode = viewPrefs.sort_mode || "custom";
+    const copy = [...list];
+    copy.sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+        return a.pinned ? -1 : 1;
+      }
+      if (mode === "alpha") {
+        return (a.title || "").localeCompare(b.title || "");
+      }
+      if (mode === "recent") {
+        return String(b.updated_at || "").localeCompare(String(a.updated_at || "")) || b.id - a.id;
+      }
+      if (mode === "fastest") {
+        const ta = (a.prep_minutes || 0) + (a.cook_minutes || 0);
+        const tb = (b.prep_minutes || 0) + (b.cook_minutes || 0);
+        return (ta > 0 ? ta : 9999) - (tb > 0 ? tb : 9999);
+      }
+      if (mode === "protein") {
+        return (Number(b.protein_g) || 0) - (Number(a.protein_g) || 0);
+      }
+      // "custom": honor server's pinned + sort_order + updated_at order
+      return 0;
+    });
+    return copy;
+  }
+
+  async function togglePinRecipe(recipeId) {
+    const r = recipes.find((x) => x.id === recipeId);
+    if (!r) return;
+    const nextPinned = !r.pinned;
+    await api(`/api/recipes/${recipeId}/pin`, {
+      method: "POST",
+      body: { pinned: nextPinned },
+    });
+    recipes = await api("/api/recipes");
+    if (selectedRecipe?.id === recipeId) {
+      selectedRecipe = recipes.find((x) => x.id === recipeId) || selectedRecipe;
+    }
+    render();
+    toast(nextPinned ? `Pinned "${r.title}" to top` : `Unpinned "${r.title}"`);
+  }
+
+  async function persistRecipeOrder(orderedIds) {
+    await api("/api/recipes/reorder", {
+      method: "POST",
+      body: { recipe_ids: orderedIds },
+    });
+    if (viewPrefs.sort_mode !== "custom") {
+      viewPrefs = { ...viewPrefs, sort_mode: "custom" };
+      saveCachedViewPrefs(viewPrefs);
+      await api("/api/recipes/view-prefs", { method: "PUT", body: viewPrefs }).catch(() => {});
+    }
+    recipes = await api("/api/recipes");
+    render();
+  }
+
   function render() {
     if (selectedRecipe) {
       renderDetail(selectedRecipe);
       return;
     }
 
-    const filtered = recipes.filter((r) => {
+    const ordered = getOrderedRecipes(recipes);
+    const filtered = ordered.filter((r) => {
       if (!search.trim()) return true;
       const q = search.trim().toLowerCase();
       if (q === "quick") {
@@ -55,67 +153,129 @@ export async function renderRecipesView(container, state) {
     });
 
     const activeQ = search.trim().toLowerCase();
+    const isCompact = viewPrefs.card_density === "compact";
 
     container.innerHTML = `
       <div class="page-header">
         <div>
           <h1 class="page-title">Recipes</h1>
-          <p class="page-subtitle">Import from any recipe website, bulk upload files, or save your family favorites</p>
+          <p class="page-subtitle">Pin favorites, reorder your page, import URLs &amp; track macros</p>
         </div>
-        <div class="row">
-          ${isGuest ? `<span class="badge badge-accent">Guest View</span>` : `
-            <button class="btn btn-sm" id="bulk-import-recipes-btn">Bulk Import</button>
-            <button class="btn btn-primary btn-sm" id="new-recipe-btn">+ New Recipe</button>
-          `}
+        <div class="row" style="gap: 6px;">
+          <button type="button" class="btn btn-sm ${arrangeMode ? "btn-primary" : ""}" id="toggle-arrange-btn" title="Pin &amp; reorder recipes">
+            ${arrangeMode ? "✓ Done" : "↕ Arrange"}
+          </button>
+          ${overflowMenu([
+            { id: "customize-recipes-btn", label: "⚙ Customize View" },
+            { id: "edit-quick-queries-btn", label: "✎ Edit Filter Chips", hidden: isGuest },
+            { id: "bulk-import-recipes-btn", label: "📥 Bulk Import", hidden: isGuest },
+          ], { title: "Recipe options" })}
+          ${isGuest ? "" : `<button class="btn btn-primary btn-sm" id="add-recipe-hub-btn">+ Add</button>`}
         </div>
       </div>
 
-      <div class="card stack-md" style="margin-bottom: 16px;">
-        ${isGuest ? "" : `
-          <form id="scrape-form" class="row-wrap">
-            <input class="input grow" id="scrape-url-input" type="url" placeholder="Paste a recipe URL to auto-import photo, ingredients & steps (https://...)" required />
-            <button class="btn btn-accent" type="submit" id="scrape-btn">Import from URL</button>
-            <button class="btn" type="button" id="paste-recipe-btn" title="Paste copied recipe text or HTML if a website blocks automatic scraping">Paste Text / HTML</button>
-          </form>
-        `}
-        <input class="input" id="recipe-search" value="${esc(search)}" placeholder="Search recipes by title, tag, or ingredient..." />
+      <div class="card stack-sm" style="margin-bottom: 14px;">
+        <input class="input" id="recipe-search" value="${esc(search)}" placeholder="Search recipes, tags, or ingredients..." />
         <div class="quick-query-bar">
           ${quickQueries.map((qq) => `
             <button type="button" class="quick-query-chip ${activeQ === qq.toLowerCase() ? "active" : ""}" data-query="${esc(qq)}">${esc(qq)}</button>
           `).join("")}
           ${activeQ ? `<button type="button" class="btn btn-sm" id="clear-recipe-filter-btn">Clear</button>` : ""}
-          ${isGuest ? "" : `<button type="button" class="btn btn-sm" id="edit-quick-queries-btn" title="Customize built-in recipe quick filter chips">✎ Edit Filters</button>`}
         </div>
       </div>
 
+      ${arrangeMode ? `
+        <div class="recipe-arrange-bar">
+          <span class="small" style="font-weight: 600;">
+            Drag cards or use <strong>⬆ Top / ↑ / ↓</strong> to arrange your Recipes page. Pin favorites with 📌.
+          </span>
+          <button type="button" class="btn btn-sm btn-primary" id="done-arrange-btn">Done Arranging</button>
+        </div>
+      ` : ""}
+
       ${filtered.length === 0 ? `
-        <div class="card empty-state">No recipes found. Import one from a URL, click <strong>Bulk Import</strong>, or click <strong>+ New Recipe</strong>!</div>
-      ` : `
-        <div class="recipe-grid">
-          ${filtered.map((r) => `
-            <div class="recipe-card">
-              ${r.image_url ? `<img class="recipe-cover" src="${esc(r.image_url)}" alt="${esc(r.title)}" loading="lazy" />` : ""}
-              <div class="row" style="justify-content: space-between; align-items: flex-start;">
-                <h3>${esc(r.title)}</h3>
-                <span class="badge">${fmtQty(r.servings)} srv</span>
+        <div class="card empty-state">
+          No recipes match${search.trim() ? ` "${esc(search.trim())}"` : ""}. ${isGuest ? "" : `Tap <strong>+ Add</strong> to import or create one!`}
+        </div>
+      ` : isCompact ? `
+        <div class="recipe-list-compact" id="recipe-arrange-container">
+          ${filtered.map((r, idx) => `
+            <div class="recipe-compact-row ${r.pinned ? "pinned" : ""}"
+              data-recipe-id="${r.id}" ${arrangeMode ? `draggable="true"` : ""}>
+              <div class="row grow" style="min-width: 0;">
+                ${(viewPrefs.show_photos && r.image_url) ? `<img class="recipe-compact-thumb" src="${esc(r.image_url)}" alt="" loading="lazy" />` : ""}
+                <div class="grow" style="min-width: 0;">
+                  <div class="row-wrap" style="gap: 6px; align-items: center;">
+                    <strong style="font-size: 0.96rem;">${esc(r.title)}</strong>
+                    <span class="badge">${fmtQty(r.servings)} srv</span>
+                    ${(r.prep_minutes || r.cook_minutes) ? `<span class="badge">${(r.prep_minutes || 0) + (r.cook_minutes || 0)}m</span>` : ""}
+                    ${r.is_customized ? `<span class="badge badge-accent">✨</span>` : ""}
+                  </div>
+                  ${viewPrefs.show_macros ? `<div style="margin-top: 3px;">${renderMacroStrip(r, true)}</div>` : ""}
+                </div>
               </div>
-              ${r.description ? `<p class="small muted" style="margin: 0;">${esc(r.description)}</p>` : ""}
+              <div class="row" style="gap: 5px; flex-shrink: 0;">
+                ${arrangeMode ? `
+                  <div class="recipe-move-controls">
+                    <button type="button" class="btn btn-sm move-rec-top" data-id="${r.id}" ${idx === 0 ? "disabled" : ""} title="Move to top">⬆</button>
+                    <button type="button" class="btn btn-sm move-rec-up" data-id="${r.id}" ${idx === 0 ? "disabled" : ""} title="Move up">↑</button>
+                    <button type="button" class="btn btn-sm move-rec-down" data-id="${r.id}" ${idx === filtered.length - 1 ? "disabled" : ""} title="Move down">↓</button>
+                  </div>
+                ` : `
+                  <button type="button" class="pin-btn ${r.pinned ? "active" : ""}" data-pin-id="${r.id}" title="${r.pinned ? "Unpin from top" : "Pin to top"}">📌</button>
+                  <button class="btn btn-sm open-recipe-btn" data-id="${r.id}">Open</button>
+                  <button class="btn btn-primary btn-sm add-week-btn" data-id="${r.id}">+ Week</button>
+                `}
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      ` : `
+        <div class="recipe-grid" id="recipe-arrange-container">
+          ${filtered.map((r, idx) => `
+            <div class="recipe-card ${r.pinned ? "pinned" : ""}"
+              data-recipe-id="${r.id}" ${arrangeMode ? `draggable="true"` : ""}>
+              ${(viewPrefs.show_photos && r.image_url) ? `<img class="recipe-cover" src="${esc(r.image_url)}" alt="${esc(r.title)}" loading="lazy" />` : ""}
+              <div class="row" style="justify-content: space-between; align-items: flex-start; gap: 8px;">
+                <h3 class="grow">${esc(r.title)}</h3>
+                <button type="button" class="pin-btn ${r.pinned ? "active" : ""}" data-pin-id="${r.id}" title="${r.pinned ? "Unpin from top" : "Pin to top"}">
+                  📌${r.pinned ? " Pinned" : ""}
+                </button>
+              </div>
+              ${(viewPrefs.show_description && r.description) ? `<p class="small muted" style="margin: 0;">${esc(r.description)}</p>` : ""}
               <div class="row-wrap">
+                <span class="badge">${fmtQty(r.servings)} srv</span>
+                ${(r.prep_minutes || r.cook_minutes) ? `<span class="badge">${(r.prep_minutes || 0) + (r.cook_minutes || 0)} min</span>` : ""}
                 ${r.is_customized ? `<span class="badge badge-accent">✨ Customized</span>` : ""}
                 ${r.tags.map((t) => `<span class="badge badge-primary">${esc(t)}</span>`).join("")}
-                ${(r.prep_minutes || r.cook_minutes) ? `<span class="badge">${(r.prep_minutes || 0) + (r.cook_minutes || 0)} min</span>` : ""}
               </div>
-              ${renderMacroStrip(r, true)}
-              <div class="row" style="margin-top: auto; padding-top: 8px; justify-content: space-between;">
-                <button class="btn btn-sm open-recipe-btn" data-id="${r.id}">View &amp; Cook</button>
-                <button class="btn btn-primary btn-sm add-week-btn" data-id="${r.id}">+ This Week</button>
-              </div>
+              ${viewPrefs.show_macros ? renderMacroStrip(r, true) : ""}
+              ${arrangeMode ? `
+                <div class="row" style="margin-top: auto; padding-top: 8px; justify-content: space-between;">
+                  <span class="small muted">Drag or move</span>
+                  <div class="recipe-move-controls">
+                    <button type="button" class="btn btn-sm move-rec-top" data-id="${r.id}" ${idx === 0 ? "disabled" : ""} title="Move to top">⬆ Top</button>
+                    <button type="button" class="btn btn-sm move-rec-up" data-id="${r.id}" ${idx === 0 ? "disabled" : ""} title="Move earlier">↑</button>
+                    <button type="button" class="btn btn-sm move-rec-down" data-id="${r.id}" ${idx === filtered.length - 1 ? "disabled" : ""} title="Move later">↓</button>
+                  </div>
+                </div>
+              ` : `
+                <div class="row" style="margin-top: auto; padding-top: 8px; justify-content: space-between;">
+                  <button class="btn btn-sm open-recipe-btn" data-id="${r.id}">View &amp; Cook</button>
+                  <button class="btn btn-primary btn-sm add-week-btn" data-id="${r.id}">+ This Week</button>
+                </div>
+              `}
             </div>
           `).join("")}
         </div>
       `}
     `;
 
+    bindOverflowMenus(container);
+    bindListEvents(filtered);
+  }
+
+  function bindListEvents(filtered) {
     document.getElementById("recipe-search")?.addEventListener("input", (e) => {
       search = e.target.value;
       render();
@@ -136,6 +296,17 @@ export async function renderRecipesView(container, state) {
       search = "";
       render();
     });
+
+    const toggleArrange = () => {
+      arrangeMode = !arrangeMode;
+      render();
+    };
+    document.getElementById("toggle-arrange-btn")?.addEventListener("click", toggleArrange);
+    document.getElementById("done-arrange-btn")?.addEventListener("click", toggleArrange);
+
+    document.getElementById("customize-recipes-btn")?.addEventListener("click", openCustomizeViewModal);
+    document.getElementById("add-recipe-hub-btn")?.addEventListener("click", () => openAddRecipeModal("url"));
+    document.getElementById("bulk-import-recipes-btn")?.addEventListener("click", openBulkImportModal);
 
     document.getElementById("edit-quick-queries-btn")?.addEventListener("click", () => {
       openModal("Edit Recipe Filter Chips", `
@@ -170,36 +341,81 @@ export async function renderRecipesView(container, state) {
       });
     });
 
-    document.getElementById("new-recipe-btn")?.addEventListener("click", () => openRecipeEditor(null, false));
-    document.getElementById("bulk-import-recipes-btn")?.addEventListener("click", openBulkImportModal);
-    document.getElementById("paste-recipe-btn")?.addEventListener("click", () => {
-      const urlVal = document.getElementById("scrape-url-input")?.value.trim() || "";
-      openQuickPasteModal(urlVal, "");
+    document.querySelectorAll("[data-pin-id]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        togglePinRecipe(Number(btn.dataset.pinId));
+      });
     });
 
-    document.getElementById("scrape-form")?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const urlInput = document.getElementById("scrape-url-input");
-      const targetUrl = urlInput.value.trim();
-      const btn = document.getElementById("scrape-btn");
-      btn.disabled = true;
-      btn.textContent = "Importing...";
-      try {
-        const scraped = await api("/api/recipes/scrape", {
-          method: "POST",
-          body: { url: targetUrl },
-        });
-        urlInput.value = "";
-        toast("Recipe imported! Review & save below.");
-        openRecipeEditor(scraped, true);
-      } catch (err) {
-        toast(err.message, true);
-        openQuickPasteModal(targetUrl, err.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "Import from URL";
-      }
+    // Arrange move buttons (works on mobile & desktop)
+    const moveVisibleRecipe = async (recipeId, direction) => {
+      const visibleIds = filtered.map((r) => r.id);
+      const curIdx = visibleIds.indexOf(recipeId);
+      if (curIdx < 0) return;
+      const nextVisible = [...visibleIds];
+      const [moved] = nextVisible.splice(curIdx, 1);
+      if (direction === "top") nextVisible.unshift(moved);
+      else if (direction === "up" && curIdx > 0) nextVisible.splice(curIdx - 1, 0, moved);
+      else if (direction === "down" && curIdx < visibleIds.length - 1) nextVisible.splice(curIdx + 1, 0, moved);
+      else return;
+
+      // Merge any hidden (filtered-out) recipes at the end
+      const restIds = recipes.map((r) => r.id).filter((id) => !nextVisible.includes(id));
+      await persistRecipeOrder([...nextVisible, ...restIds]);
+    };
+
+    document.querySelectorAll(".move-rec-top").forEach((b) => {
+      b.addEventListener("click", () => moveVisibleRecipe(Number(b.dataset.id), "top"));
     });
+    document.querySelectorAll(".move-rec-up").forEach((b) => {
+      b.addEventListener("click", () => moveVisibleRecipe(Number(b.dataset.id), "up"));
+    });
+    document.querySelectorAll(".move-rec-down").forEach((b) => {
+      b.addEventListener("click", () => moveVisibleRecipe(Number(b.dataset.id), "down"));
+    });
+
+    // Drag & Drop arrangement (desktop)
+    if (arrangeMode) {
+      let draggedId = null;
+      document.querySelectorAll("#recipe-arrange-container [data-recipe-id]").forEach((el) => {
+        el.addEventListener("dragstart", (e) => {
+          draggedId = Number(el.dataset.recipeId);
+          el.classList.add("dragging");
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", String(draggedId));
+          }
+        });
+        el.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          if (Number(el.dataset.recipeId) !== draggedId) {
+            el.classList.add("drag-over");
+          }
+        });
+        el.addEventListener("dragleave", () => {
+          el.classList.remove("drag-over");
+        });
+        el.addEventListener("drop", async (e) => {
+          e.preventDefault();
+          el.classList.remove("drag-over");
+          const targetId = Number(el.dataset.recipeId);
+          if (!draggedId || draggedId === targetId) return;
+          const visibleIds = filtered.map((r) => r.id);
+          const fromIdx = visibleIds.indexOf(draggedId);
+          const toIdx = visibleIds.indexOf(targetId);
+          if (fromIdx < 0 || toIdx < 0) return;
+          const [moved] = visibleIds.splice(fromIdx, 1);
+          visibleIds.splice(toIdx, 0, moved);
+          const restIds = recipes.map((r) => r.id).filter((id) => !visibleIds.includes(id));
+          await persistRecipeOrder([...visibleIds, ...restIds]);
+        });
+        el.addEventListener("dragend", () => {
+          draggedId = null;
+          document.querySelectorAll(".dragging, .drag-over").forEach((n) => n.classList.remove("dragging", "drag-over"));
+        });
+      });
+    }
 
     document.querySelectorAll(".open-recipe-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -221,6 +437,154 @@ export async function renderRecipesView(container, state) {
     });
   }
 
+  function openCustomizeViewModal() {
+    openModal("Customize Recipes Page", `
+      <form id="customize-recipes-form" class="stack-md">
+        <div>
+          <label class="field-label">Sort Order (Pinned recipes always stay first)</label>
+          <select class="select" name="sort_mode">
+            <option value="custom" ${viewPrefs.sort_mode === "custom" ? "selected" : ""}>Custom Order (Pinned + Arranged)</option>
+            <option value="recent" ${viewPrefs.sort_mode === "recent" ? "selected" : ""}>Recently Updated</option>
+            <option value="alpha" ${viewPrefs.sort_mode === "alpha" ? "selected" : ""}>Alphabetical (A → Z)</option>
+            <option value="fastest" ${viewPrefs.sort_mode === "fastest" ? "selected" : ""}>Fastest Total Time</option>
+            <option value="protein" ${viewPrefs.sort_mode === "protein" ? "selected" : ""}>Highest Protein</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Layout Style</label>
+          <select class="select" name="card_density">
+            <option value="cards" ${viewPrefs.card_density === "cards" ? "selected" : ""}>Cards Grid</option>
+            <option value="compact" ${viewPrefs.card_density === "compact" ? "selected" : ""}>Compact List</option>
+          </select>
+        </div>
+        <div class="stack-sm">
+          <label class="row small" style="cursor: pointer;">
+            <input type="checkbox" name="show_photos" ${viewPrefs.show_photos ? "checked" : ""} />
+            <span>Show recipe photos</span>
+          </label>
+          <label class="row small" style="cursor: pointer;">
+            <input type="checkbox" name="show_macros" ${viewPrefs.show_macros ? "checked" : ""} />
+            <span>Show nutrition &amp; calorie badges</span>
+          </label>
+          <label class="row small" style="cursor: pointer;">
+            <input type="checkbox" name="show_description" ${viewPrefs.show_description ? "checked" : ""} />
+            <span>Show short descriptions on cards</span>
+          </label>
+        </div>
+        <button class="btn btn-primary" type="submit">Save Layout Preferences</button>
+      </form>
+    `, (close) => {
+      document.getElementById("customize-recipes-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = e.target;
+        const nextPrefs = {
+          sort_mode: f.sort_mode.value,
+          card_density: f.card_density.value,
+          show_photos: f.show_photos.checked,
+          show_macros: f.show_macros.checked,
+          show_description: f.show_description.checked,
+        };
+        viewPrefs = await api("/api/recipes/view-prefs", {
+          method: "PUT",
+          body: nextPrefs,
+        });
+        saveCachedViewPrefs(viewPrefs);
+        close();
+        render();
+        toast("Saved Recipes page preferences!");
+      });
+    });
+  }
+
+  function openAddRecipeModal(initialTab = "url") {
+    let tab = initialTab;
+    const renderHub = () => `
+      <div class="stack-md">
+        <div class="subtabs" style="margin-bottom: 4px;">
+          <button type="button" class="subtab ${tab === "url" ? "active" : ""}" data-add-tab="url">From URL</button>
+          <button type="button" class="subtab ${tab === "paste" ? "active" : ""}" data-add-tab="paste">Paste Text / HTML</button>
+          <button type="button" class="subtab" data-add-tab="manual">Manual</button>
+          <button type="button" class="subtab ${tab === "bulk" ? "active" : ""}" data-add-tab="bulk">Bulk Import</button>
+        </div>
+
+        ${tab === "url" ? `
+          <form id="hub-scrape-form" class="stack-md">
+            <div>
+              <label class="field-label">Recipe Web Page URL</label>
+              <input class="input" id="hub-scrape-url" type="url" placeholder="https://www.budgetbytes.com/..." required />
+            </div>
+            <p class="small muted" style="margin: 0;">Automatically imports title, photo, servings, ingredients, steps, and nutrition.</p>
+            <button class="btn btn-primary" type="submit" id="hub-scrape-btn">Import from URL</button>
+          </form>
+        ` : ""}
+
+        ${tab === "paste" ? `
+          <div id="hub-paste-placeholder"></div>
+        ` : ""}
+
+        ${tab === "bulk" ? `
+          <div id="hub-bulk-placeholder"></div>
+        ` : ""}
+      </div>
+    `;
+
+    openModal("Add Recipe", renderHub(), (close) => {
+      const bindHub = () => {
+        document.querySelectorAll("[data-add-tab]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const nextTab = btn.dataset.addTab;
+            if (nextTab === "manual") {
+              close();
+              openRecipeEditor(null, false);
+              return;
+            }
+            if (nextTab === "paste") {
+              close();
+              openQuickPasteModal("", "");
+              return;
+            }
+            if (nextTab === "bulk") {
+              close();
+              openBulkImportModal();
+              return;
+            }
+            tab = nextTab;
+            document.getElementById("modal-body").innerHTML = renderHub();
+            bindHub();
+          });
+        });
+
+        document.getElementById("hub-scrape-form")?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const urlInput = document.getElementById("hub-scrape-url");
+          const targetUrl = urlInput.value.trim();
+          const btn = document.getElementById("hub-scrape-btn");
+          btn.disabled = true;
+          btn.textContent = "Importing...";
+          try {
+            const scraped = await api("/api/recipes/scrape", {
+              method: "POST",
+              body: { url: targetUrl },
+            });
+            close();
+            toast("Recipe imported! Review & save below.");
+            openRecipeEditor(scraped, true);
+          } catch (err) {
+            toast(err.message, true);
+            close();
+            openQuickPasteModal(targetUrl, err.message);
+          }
+        });
+
+        if (tab === "url") {
+          document.getElementById("hub-scrape-url")?.focus();
+        }
+      };
+
+      bindHub();
+    });
+  }
+
   function openQuickPasteModal(prefillUrl = "", errorReason = "") {
     let pasteMode = "smart";
     openModal("Quick Paste Recipe Import", `
@@ -228,7 +592,7 @@ export async function renderRecipesView(container, state) {
         ${errorReason ? `
           <div class="card" style="padding: 10px 12px; background: var(--accent-soft); border-color: #fcd34d; color: #92400e; font-size: 0.85rem;">
             <strong>Direct URL fetch was blocked by the website's firewall:</strong> ${esc(errorReason)}<br/>
-            You can still import it in seconds: open the recipe page in your browser, copy either the recipe text or the page HTML source (<code>Ctrl+U</code> &rarr; <code>Ctrl+A</code> &rarr; <code>Ctrl+C</code>), and paste it below!
+            Open the recipe in your browser, copy either the recipe text or the page HTML source (<code>Ctrl+U</code> &rarr; <code>Ctrl+A</code> &rarr; <code>Ctrl+C</code>), and paste it below!
           </div>
         ` : `
           <p class="small muted" style="margin: 0;">
@@ -404,12 +768,15 @@ export async function renderRecipesView(container, state) {
 
     container.innerHTML = `
       <div class="page-header">
-        <button class="btn btn-sm" id="back-recipes-btn">← All Recipes</button>
-        <div class="row-wrap">
-          <button class="btn btn-sm" id="detail-loseit-btn">📋 Lose It! / Macro Card</button>
-          ${(r.source_url && !isGuest) ? `<button class="btn btn-sm" id="sync-url-btn" title="Fetch missing photo &amp; nutrition from source URL">🔄 Sync URL Info</button>` : ""}
-          ${isGuest ? "" : `<button class="btn btn-sm" id="edit-recipe-btn">Edit</button>`}
-          <button class="btn btn-primary btn-sm" id="detail-add-week-btn">+ Add to This Week</button>
+        <button class="btn btn-sm" id="back-recipes-btn">← Recipes</button>
+        <div class="row" style="gap: 6px;">
+          <button class="btn btn-primary btn-sm" id="detail-add-week-btn">+ This Week</button>
+          ${overflowMenu([
+            { id: "edit-recipe-btn", label: "✎ Edit Recipe", hidden: isGuest },
+            { id: "detail-loseit-btn", label: "📋 Lose It! / Macro Card" },
+            { id: "detail-pin-btn", label: r.pinned ? "📌 Unpin from Top" : "📌 Pin to Top" },
+            { id: "sync-url-btn", label: "🔄 Sync URL Info", hidden: !(r.source_url && !isGuest) },
+          ], { title: "Recipe actions" })}
         </div>
       </div>
 
@@ -422,8 +789,8 @@ export async function renderRecipesView(container, state) {
           <div class="row-wrap" style="gap: 6px;">
             <button class="btn btn-sm" id="toggle-diff-btn" type="button">${showDiff ? "Hide Diff" : "Show Diff"}</button>
             ${isGuest ? "" : `
-              <button class="btn btn-sm" id="reset-original-btn" type="button">↩ Revert to Original</button>
-              <button class="btn btn-sm" id="save-baseline-btn" type="button" title="Save current version as the new original baseline">✓ Set as Baseline</button>
+              <button class="btn btn-sm" id="reset-original-btn" type="button">↩ Revert</button>
+              <button class="btn btn-sm" id="save-baseline-btn" type="button" title="Save current version as the new original baseline">✓ Set Baseline</button>
             `}
           </div>
         </div>
@@ -447,6 +814,7 @@ export async function renderRecipesView(container, state) {
           <span class="badge">${fmtQty(r.servings * cookScale)} servings${r.custom_portions ? ` (divided into ${fmtQty(r.custom_portions)} portions)` : ""}</span>
           ${r.prep_minutes ? `<span class="badge">Prep: ${r.prep_minutes}m</span>` : ""}
           ${r.cook_minutes ? `<span class="badge">Cook: ${r.cook_minutes}m</span>` : ""}
+          ${r.pinned ? `<span class="badge badge-accent">📌 Pinned</span>` : ""}
           ${r.tags.map((t) => `<span class="badge badge-primary">${esc(t)}</span>`).join("")}
           ${r.source_url ? `<a class="badge" href="${esc(r.source_url)}" target="_blank" rel="noopener">Original Source ↗</a>` : ""}
         </div>
@@ -495,16 +863,17 @@ export async function renderRecipesView(container, state) {
           </div>
           ${r.steps.length === 0 ? `<p class="muted small">No steps saved.</p>` : r.steps.map((step, idx) => {
             const sDiff = (showDiff && r.step_diffs?.[idx]) ? r.step_diffs[idx] : null;
+            const sStatus = sDiff?.diff_status || "unchanged";
             return `
               <div class="step-row ${doneSteps.has(idx) ? "done" : ""}" data-step="${idx}">
                 <div class="step-num">${idx + 1}</div>
                 <div class="grow">
                   <div class="row-wrap" style="justify-content: space-between; align-items: flex-start; gap: 6px;">
                     <span>${esc(step)}</span>
-                    ${sDiff?.status === "added" ? `<span class="diff-badge-added">+ User Added</span>` : ""}
-                    ${sDiff?.status === "modified" ? `<span class="diff-badge-mod">✎ Modified</span>` : ""}
+                    ${sStatus === "added" ? `<span class="diff-badge-added">+ User Added</span>` : ""}
+                    ${sStatus === "modified" ? `<span class="diff-badge-mod">✎ Modified</span>` : ""}
                   </div>
-                  ${(sDiff?.status === "modified" && sDiff.original_text) ? `<div class="diff-was-note">Original: ${esc(sDiff.original_text)}</div>` : ""}
+                  ${(sStatus === "modified" && sDiff.original_text) ? `<div class="diff-was-note">Original: ${esc(sDiff.original_text)}</div>` : ""}
                 </div>
               </div>
             `;
@@ -527,10 +896,14 @@ export async function renderRecipesView(container, state) {
       </div>
     `;
 
+    bindOverflowMenus(container);
+
     document.getElementById("back-recipes-btn").addEventListener("click", () => {
       selectedRecipe = null;
       render();
     });
+
+    document.getElementById("detail-pin-btn")?.addEventListener("click", () => togglePinRecipe(r.id));
 
     document.getElementById("toggle-diff-btn")?.addEventListener("click", () => {
       showDiff = !showDiff;
@@ -809,7 +1182,9 @@ export async function renderRecipesView(container, state) {
           saved = await api("/api/recipes", { method: "POST", body });
         }
         recipes = await api("/api/recipes");
-        if (selectedRecipe) selectedRecipe = saved;
+        if (selectedRecipe) {
+          selectedRecipe = recipes.find((x) => x.id === saved.id) || saved;
+        }
         close();
         render();
         toast("Recipe saved!");

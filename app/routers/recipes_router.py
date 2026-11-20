@@ -65,6 +65,31 @@ class ParseContentPayload(BaseModel):
     source_url: str = ""
 
 
+class RecipeReorderPayload(BaseModel):
+    recipe_ids: list[int]
+
+
+class RecipePinPayload(BaseModel):
+    pinned: bool
+
+
+class RecipeViewPrefsPayload(BaseModel):
+    sort_mode: str = "custom"
+    card_density: str = "cards"
+    show_photos: bool = True
+    show_macros: bool = True
+    show_description: bool = True
+
+
+DEFAULT_RECIPE_VIEW_PREFS = {
+    "sort_mode": "custom",
+    "card_density": "cards",
+    "show_photos": True,
+    "show_macros": True,
+    "show_description": True,
+}
+
+
 def _parsed_ingredient_dicts(ingredients: list[IngredientInput]) -> list[dict]:
     out = []
     for ing in ingredients:
@@ -188,7 +213,7 @@ def _compute_recipe_diff(
     }
 
 
-def _serialize_recipe(conn, row) -> dict:
+def _serialize_recipe(conn, row, pref: Optional[dict] = None) -> dict:
     ings = conn.execute(
         """
         SELECT ri.*, pc.display_name AS catalog_name, pc.package_label, pc.default_department
@@ -229,6 +254,8 @@ def _serialize_recipe(conn, row) -> dict:
         "removed_ingredients": diff["removed_ingredients"],
         "step_diffs": diff["step_diffs"],
         "removed_steps": diff["removed_steps"],
+        "pinned": bool(pref.get("pinned")) if pref else False,
+        "sort_order": pref.get("sort_order") if pref else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "ingredients": diff["ingredients"],
@@ -239,7 +266,19 @@ def _serialize_recipe(conn, row) -> dict:
 def list_recipes(q: str = "", tag: str = "", user: dict = Depends(get_current_user)):
     with get_db() as conn:
         rows = conn.execute("SELECT * FROM recipes ORDER BY updated_at DESC, id DESC").fetchall()
-        items = [_serialize_recipe(conn, r) for r in rows]
+        pref_rows = conn.execute(
+            "SELECT recipe_id, pinned, sort_order FROM user_recipe_prefs WHERE user_id = ?",
+            (user["id"],),
+        ).fetchall()
+        pref_map = {p["recipe_id"]: dict(p) for p in pref_rows}
+        items = [_serialize_recipe(conn, r, pref_map.get(r["id"])) for r in rows]
+
+    items.sort(
+        key=lambda r: (
+            0 if r["pinned"] else 1,
+            r["sort_order"] if r["sort_order"] is not None else 999999,
+        )
+    )
 
     if q.strip():
         ql = q.strip().lower()
@@ -509,13 +548,87 @@ async def sync_single_recipe_from_url(recipe_id: int, user: dict = Depends(get_c
         return _serialize_recipe(conn, refreshed)
 
 
+@router.post("/reorder")
+def reorder_recipes(payload: RecipeReorderPayload, user: dict = Depends(get_current_user)):
+    now = utc_now_iso()
+    with get_db() as conn:
+        for idx, rid in enumerate(payload.recipe_ids, start=1):
+            conn.execute(
+                """
+                INSERT INTO user_recipe_prefs (user_id, recipe_id, pinned, sort_order, updated_at)
+                VALUES (?, ?, 0, ?, ?)
+                ON CONFLICT(user_id, recipe_id) DO UPDATE SET
+                    sort_order = excluded.sort_order,
+                    updated_at = excluded.updated_at
+                """,
+                (user["id"], rid, idx, now),
+            )
+    return {"ok": True}
+
+
+@router.get("/view-prefs")
+def get_recipe_view_prefs(user: dict = Depends(get_current_user)):
+    key = f"recipe_view_prefs:{user['id']}"
+    with get_db() as conn:
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        if row:
+            try:
+                parsed = json.loads(row["value_json"])
+                if isinstance(parsed, dict):
+                    return {**DEFAULT_RECIPE_VIEW_PREFS, **parsed}
+            except Exception:
+                pass
+    return dict(DEFAULT_RECIPE_VIEW_PREFS)
+
+
+@router.put("/view-prefs")
+def update_recipe_view_prefs(payload: RecipeViewPrefsPayload, user: dict = Depends(get_current_user)):
+    key = f"recipe_view_prefs:{user['id']}"
+    val = payload.model_dump()
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(val), utc_now_iso()),
+        )
+    return val
+
+
 @router.get("/{recipe_id}")
 def get_recipe(recipe_id: int, user: dict = Depends(get_current_user)):
     with get_db() as conn:
         row = conn.execute("SELECT * FROM recipes WHERE id = ?", (recipe_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Recipe not found")
-        return _serialize_recipe(conn, row)
+        pref = conn.execute(
+            "SELECT recipe_id, pinned, sort_order FROM user_recipe_prefs WHERE user_id = ? AND recipe_id = ?",
+            (user["id"], recipe_id),
+        ).fetchone()
+        return _serialize_recipe(conn, row, dict(pref) if pref else None)
+
+
+@router.post("/{recipe_id}/pin")
+def pin_recipe(recipe_id: int, payload: RecipePinPayload, user: dict = Depends(get_current_user)):
+    now = utc_now_iso()
+    with get_db() as conn:
+        if not conn.execute("SELECT 1 FROM recipes WHERE id = ?", (recipe_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Recipe not found")
+        conn.execute(
+            """
+            INSERT INTO user_recipe_prefs (user_id, recipe_id, pinned, sort_order, updated_at)
+            VALUES (?, ?, ?, NULL, ?)
+            ON CONFLICT(user_id, recipe_id) DO UPDATE SET
+                pinned = excluded.pinned,
+                updated_at = excluded.updated_at
+            """,
+            (user["id"], recipe_id, 1 if payload.pinned else 0, now),
+        )
+    return {"ok": True, "recipe_id": recipe_id, "pinned": payload.pinned}
 
 
 @router.patch("/{recipe_id}/portions")
@@ -751,11 +864,21 @@ async def update_recipe(recipe_id: int, payload: RecipePayload, user: dict = Dep
 
         # Keep unlogged weekly calendar slots in sync with updated recipe macros
         if cal is not None:
+            hrow = conn.execute("SELECT value_json FROM app_settings WHERE key = 'household_size'").fetchone()
+            hsize = None
+            if hrow:
+                try:
+                    hsize = int(json.loads(hrow["value_json"]))
+                except Exception:
+                    hsize = None
+            if not hsize or hsize < 1:
+                hsize = max(1, int(conn.execute("SELECT COUNT(*) FROM users WHERE COALESCE(is_guest, 0) = 0").fetchone()[0] or 1))
+
             portion_div = float(payload.custom_portions or payload.servings or 1.0)
             srv_ratio = float(payload.servings or 1.0) / max(portion_div, 0.5)
             slots = conn.execute(
                 """
-                SELECT mcs.id, mcs.servings_used
+                SELECT mcs.id, mcs.servings_used, mcs.person_name
                 FROM meal_calendar_slots mcs
                 JOIN meal_plan_items mpi ON mpi.id = mcs.plan_item_id
                 WHERE mpi.recipe_id = ? AND (mcs.logged_at IS NULL OR mcs.logged_at = '')
@@ -763,7 +886,10 @@ async def update_recipe(recipe_id: int, payload: RecipePayload, user: dict = Dep
                 (recipe_id,),
             ).fetchall()
             for srow in slots:
-                mult = float(srow["servings_used"] or 1.0) * srv_ratio
+                is_ev = (srow["person_name"] or "").strip() in ("", "Everyone")
+                raw_srv = float(srow["servings_used"] or 1.0)
+                eff_srv = (raw_srv / hsize) if (is_ev and hsize > 1) else raw_srv
+                mult = eff_srv * srv_ratio
                 conn.execute(
                     """
                     UPDATE meal_calendar_slots
